@@ -24,6 +24,7 @@ import (
 	"MailMergeApp/backend/models"
 	"MailMergeApp/backend/outlook"
 	"MailMergeApp/backend/services"
+	"MailMergeApp/backend/storage"
 	"context"
 	"encoding/csv"
 	"fmt"
@@ -32,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -48,6 +50,7 @@ type App struct {
 	templateService *services.TemplateService    // Handles email template persistence
 	settingsService *services.SettingsService    // Handles app settings persistence
 	suppression     *services.SuppressionService // Suppression / unsubscribe list
+	history         storage.CampaignRepository   // Campaign run history (JSON-backed)
 
 	mu         sync.Mutex         // guards cancel and lastResult
 	cancel     context.CancelFunc // cancels the in-flight campaign, if any
@@ -79,6 +82,15 @@ func NewApp() *App {
 
 	sender := outlook.New()
 
+	var history storage.CampaignRepository
+	if appData, derr := os.UserConfigDir(); derr == nil {
+		if repo, herr := storage.NewJSONCampaignRepository(filepath.Join(appData, "MailMergeGo", "campaigns")); herr == nil {
+			history = repo
+		} else {
+			fmt.Printf("Warning: failed to initialize campaign history: %v\n", herr)
+		}
+	}
+
 	return &App{
 		fileService:     services.NewFileService(),
 		mergeService:    services.NewMergeService(),
@@ -87,7 +99,40 @@ func NewApp() *App {
 		templateService: templateService,
 		settingsService: settingsService,
 		suppression:     suppression,
+		history:         history,
 	}
+}
+
+// recordRun persists a terminal campaign result to history (best effort).
+func (a *App) recordRun(subject string, isHTML bool, res campaign.CampaignResult) {
+	if a.history == nil {
+		return
+	}
+	rec := storage.CampaignRecord{
+		ID:             uuid.NewString(),
+		StartedAt:      time.Now(),
+		FinishedAt:     time.Now(),
+		Subject:        subject,
+		IsHTML:         isHTML,
+		RecipientCount: res.Attempted + res.Skipped + res.Cancelled,
+		State:          res.State,
+		Result:         res,
+	}
+	if err := a.history.Save(rec); err != nil {
+		fmt.Printf("Warning: failed to record campaign run: %v\n", err)
+	}
+}
+
+// GetCampaignHistory returns past campaign runs, newest first.
+func (a *App) GetCampaignHistory() []storage.CampaignRecord {
+	if a.history == nil {
+		return []storage.CampaignRecord{}
+	}
+	records, err := a.history.List()
+	if err != nil {
+		return []storage.CampaignRecord{}
+	}
+	return records
 }
 
 // startup is called when the app starts. It receives the Wails context
@@ -335,6 +380,7 @@ func (a *App) SendBulkEmails(request models.EmailRequest) campaign.CampaignResul
 	a.mu.Lock()
 	a.lastResult = &res
 	a.mu.Unlock()
+	a.recordRun(request.SubjectTemplate, request.IsHTML, res)
 	return res
 }
 
