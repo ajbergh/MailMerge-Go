@@ -1,6 +1,16 @@
 # MailMerge Go
 
-A production-ready Windows desktop application for Outlook-based email mail merge. Built with Go backend (using COM bindings) and React frontend, bundled with Wails.
+A Windows desktop application for Outlook-based email mail merge. Built with a Go
+backend (classic Outlook COM automation) and a React/TypeScript frontend, bundled
+with Wails v2.
+
+> **Status:** actively developed, not yet certified production-ready. Core sending
+> is guarded by a campaign preflight and a typed result model; automated tests
+> cover the campaign engine without Outlook. See [dev_docs/](dev_docs/) for
+> architecture and the [ROADMAP](ROADMAP.md) for what is implemented vs planned.
+>
+> **Outlook support:** classic desktop Outlook only. The **New Outlook** app does
+> **not** expose COM automation and is not supported for sending.
 
 ## Features
 
@@ -55,9 +65,9 @@ A production-ready Windows desktop application for Outlook-based email mail merg
 - Microsoft Outlook installed and configured with an email account
 
 ### For Developers
-- Go 1.21 or later
-- Node.js 18 or later
-- Wails CLI v2
+- Go 1.24 or later (matches `go.mod`; CI pins 1.24.x)
+- Node.js 20 or later
+- Wails CLI v2.11.0
 
 ## Installation
 
@@ -129,11 +139,18 @@ After import:
 
 Enter your email subject and body. Merge field buttons are automatically generated based on your imported file columns.
 
-**Common Merge Fields**:
-- `{FirstName}` - Recipient's first name
-- `{LastName}` - Recipient's last name
-- `{Email}` - Recipient's email address
-- Plus any custom columns from your file!
+**Merge field syntax** (see [dev_docs/merge-fields.md](dev_docs/merge-fields.md)):
+- Canonical: `{{field_id}}` — e.g. `{{first_name}}`, `{{account_manager}}`
+- With fallback: `{{first_name|there}}` — uses the fallback when the value is blank
+- Legacy single-brace `{FirstName}` is still supported for backward compatibility
+
+Columns with spaces, hyphens, punctuation, or non-ASCII characters are supported
+(e.g. `Account Manager` → `{{account_manager}}`). Unknown fields are reported and
+**block sending** rather than silently rendering as empty. Merge values are
+HTML-escaped in HTML emails.
+
+**Common fields**: `{{first_name}}`, `{{last_name}}`, `{{email}}`, plus any column
+from your file.
 
 Toggle between plain text and rich text (HTML) mode.
 
@@ -162,32 +179,90 @@ After sending completes:
 
 ```
 MailMergeApp/
-├── app.go                 # Main app with Wails bindings
-├── main.go                # Application entry point
+├── app.go                 # Wails bindings (thin controller over the engine)
+├── main.go                # Application entry point + build-time version vars
 ├── backend/
-│   ├── models/
-│   │   └── contact.go     # Data models (Contact, Template, Settings)
-│   └── services/
-│       ├── file_service.go      # CSV/Excel parsing
-│       ├── merge_service.go     # Template merging
-│       ├── outlook_service.go   # Outlook COM automation
-│       ├── template_service.go  # Email template management (v1.3)
-│       └── settings_service.go  # App settings persistence (v1.3)
+│   ├── models/            # Shared data structs (Contact, Settings, Template, ...)
+│   ├── mergefield/        # Canonical merge-field model + renderer + diagnostics
+│   ├── email/             # net/mail validation, address lists, duplicate policy
+│   ├── htmlutil/          # HTML normalization + sanitizer (bluemonday)
+│   ├── campaign/          # EmailSender iface, FakeSender, preflight, runner, results
+│   ├── outlook/           # Classic-Outlook COM sender (dedicated STA worker) + stub
+│   ├── graph/             # Microsoft Graph sender (design-stage stub)
+│   ├── storage/           # Campaign history repository (JSON impl)
+│   └── services/          # File import, templates, settings, suppression persistence
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx        # Main React component
-│   │   ├── components/    # UI components
-│   │   │   ├── TemplateManager.tsx  # Template selection (v1.3)
-│   │   │   ├── SettingsModal.tsx    # Settings panel (v1.3)
-│   │   │   └── ...                  # Other components
-│   │   ├── styles/        # CSS styles
+│   │   ├── components/    # UI components (+ *.test.tsx)
+│   │   ├── styles/        # CSS
 │   │   └── types/         # TypeScript types
 │   └── wailsjs/           # Generated Wails bindings
-├── samples/
-│   └── contacts.csv       # Sample contact file
-└── build/
-    └── bin/               # Built executables
+├── .github/workflows/     # CI + release pipelines
+├── dev_docs/              # Architecture, merge fields, testing, security, ...
+├── samples/contacts.csv   # Sample contact file
+└── build/bin/             # Built executables
 ```
+
+## Testing
+
+```powershell
+# Go: unit tests for the campaign engine, merge fields, email, services, storage
+go test ./backend/...
+go vet ./backend/...
+
+# Frontend: type check, unit tests, production build
+cd frontend
+npm ci
+npm run test
+npm run build
+```
+
+Outlook COM is isolated behind an `EmailSender` interface, so the campaign engine
+is fully testable without Outlook installed. Windows/Outlook integration tests are
+opt-in behind a build tag:
+
+```powershell
+go test -tags outlookintegration ./backend/outlook/...
+```
+
+See [dev_docs/testing.md](dev_docs/testing.md).
+
+## Continuous Integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to
+`main`: gofmt check, `go vet`, `go test -race`, golangci-lint, frontend
+lint/test/build, a Wails Windows build with an uploaded unsigned artifact, and
+dependency scanning (govulncheck + npm audit). Releases are cut only from version
+tags via `release.yml`.
+
+## Data Storage & Privacy
+
+Application data is stored locally under your Windows user profile
+(`%AppData%\MailMergeGo`):
+
+- `settings.json` — application settings
+- `templates/*.json` — saved email templates
+- `suppression.json` — local do-not-send list
+- `campaigns/*.json` — campaign run history
+
+No contact data, credentials, or email content is sent anywhere by this
+application; email is submitted through your local Outlook profile. No tracking
+pixels or unsubscribe links are added to messages. See
+[dev_docs/security.md](dev_docs/security.md).
+
+## Security Notes
+
+- Imported contact values are HTML-escaped before being placed into HTML emails,
+  and authored HTML bodies are sanitized (scripts, event handlers, unsafe URLs,
+  iframes, and embedded objects are removed).
+- Previews are additionally sanitized and rendered in a sandboxed iframe.
+- Template IDs are backend-generated and cannot traverse directories; built-in
+  templates cannot be overwritten.
+- Settings, templates, suppression list, and campaign history are written
+  atomically (temp file + rename).
+- "Submitted" reflects acceptance by Outlook for sending; it does not confirm
+  delivery.
 
 ## Troubleshooting
 

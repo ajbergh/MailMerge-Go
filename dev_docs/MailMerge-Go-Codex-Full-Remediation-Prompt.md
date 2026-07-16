@@ -32,7 +32,7 @@ store, CI/packaging, docs. See table.
 | 1.4 | Campaign preflight | ✅ | `campaign.Preflighter` full checklist; `PreflightCampaign` binding. Frontend display pending. |
 | 1.5 | Email validation (`net/mail`) | ✅ | `backend/email`; comma/semicolon lists; tests. |
 | 1.6 | Duplicate recipient resolution | ✅ | Policy engine (keep first/last/exclude/all/manual); applied pre-count; tests. |
-| 1.7 | Attachment remediation | 🚧 | Backend resolves/validates (incl. personalized paths); frontend drag-drop/size wiring pending. |
+| 1.7 | Attachment remediation | ✅ | Backend resolves/validates (incl. personalized paths); frontend size/total + file-drop wired. |
 | 1.8 | Sending settings affect behavior | ✅ | Validated `SendOptions` from settings; 500ms hard-code removed; tests. Sound/auto-save pending. |
 | 1.9 | Typed campaign results / fatal errors | ✅ | Typed states; fatal ≠ empty success; tests. |
 | 2.10 | EmailSender abstraction + FakeSender | ✅ | Interface + deterministic FakeSender + capabilities; tests. |
@@ -40,24 +40,24 @@ store, CI/packaging, docs. See table.
 | 2.12 | Outlook capability detection | ✅ | Actionable status; no false New-Outlook claims. |
 | 2.13 | Cancellation / pause / resume | ✅ | Context cancellation + `CancelCampaign`; cancelled recipients preserved. Pause/resume deferred. |
 | 2.14 | Retry semantics | ✅ | Attempt-history retry, no double count; `RetryFailed` binding; tests. |
-| 3.15 | Safe template storage | 🚧 | Atomic helper ready; hardening in progress. |
-| 3.16 | Safe settings persistence | 🚧 | Schema version + policy added; validation/merge in progress. |
-| 3.17 | HTML security | ✅ | Escape merge values + bluemonday sanitize authored HTML; tests. |
-| 3.18 | Campaign persistence | ⏳ | Repository interfaces planned (JSON first). |
-| 3.19 | Suppression / unsubscribe | ✅ | `SuppressionService` (atomic, normalized); preflight blocks. Frontend UI pending. |
-| 4.20 | Contact import improvements | ⏳ | BOM/limits/sheet-selection pending. |
-| 4.21 | Contact editing and review | 🚧 | Stable `Contact.ID` added; UI editing pending. |
-| 4.22 | Frontend state refactor | ⏳ | Hooks/wiring to new bindings pending. |
-| 4.23 | Accessibility | ⏳ | |
-| 5.24 | Go tests | ✅ | mergefield/email/campaign/htmlutil covered; more to add for services. |
-| 5.25 | Windows Outlook integration tests | ⏳ | Build-tagged harness pending. |
-| 5.26 | Frontend tests | ⏳ | |
-| 5.27 | Static analysis & formatting | 🚧 | gofmt/vet clean; golangci config + frontend lint pending. |
-| 5.28 | GitHub Actions CI | ⏳ | |
-| 5.29 | Reproducible builds | 🚧 | Version ldflags vars added; build.ps1/CI pinning pending. |
-| 5.30 | Packaging and release quality | ⏳ | |
-| 6.31 | Microsoft Graph readiness | ⏳ | Design doc + interface pending. |
-| — | Documentation remediation | ⏳ | README/ROADMAP/dev_docs pending. |
+| 3.15 | Safe template storage | ✅ | ID validation, built-in protection, atomic writes, content validation; tests. |
+| 3.16 | Safe settings persistence | ✅ | Validate + merge-defaults + schema migration + atomic + copy getters; tests. |
+| 3.17 | HTML security | ✅ | Escape merge values + bluemonday sanitize; DOMPurify preview; tests. |
+| 3.18 | Campaign persistence | ✅ | `storage.CampaignRepository` + JSON store + history binding; tests. SQLite deferred. |
+| 3.19 | Suppression / unsubscribe | ✅ | `SuppressionService` (atomic, normalized); preflight blocks; tests. UI bindings pending. |
+| 4.20 | Contact import improvements | 🚧 | BOM/limits/dup-headers/blank-rows/IDs done; Excel sheet-selection + column mapping pending. |
+| 4.21 | Contact editing and review | ✅ | Stable `Contact.ID` selection; filtering by ID. Inline row editing deferred. |
+| 4.22 | Frontend state refactor | 🚧 | Wired to typed bindings (preflight/cancel/retry/confirm); full hook decomposition pending. |
+| 4.23 | Accessibility | 🚧 | Labels, sr-only, aria, semantic table/alerts; focus-trap/SR-progress pending. |
+| 5.24 | Go tests | ✅ | mergefield/email/campaign/htmlutil/services/storage covered. |
+| 5.25 | Windows Outlook integration tests | ✅ | Build-tagged harness (`outlookintegration`); compiles; run on-device. |
+| 5.26 | Frontend tests | ✅ | Vitest + ContactTable/ResultsSummary tests pass. |
+| 5.27 | Static analysis & formatting | ✅ | gofmt/vet clean, `.golangci.yml`, unused dep removed. Frontend ESLint not added. |
+| 5.28 | GitHub Actions CI | ✅ | `ci.yml` (test/vet/lint/build/scan) + tag-based `release.yml`. |
+| 5.29 | Reproducible builds | ✅ | ldflags version stamping, `npm ci`, pinned tool versions. |
+| 5.30 | Packaging and release quality | 🚧 | Release workflow + checksums; installer/signing/SBOM pending. |
+| 6.31 | Microsoft Graph readiness | ✅ | Design doc + `EmailSender`-conformant stub behind future flag. |
+| — | Documentation remediation | ✅ | README corrected; ROADMAP; dev_docs set; CONTRIBUTING/SECURITY/CHANGELOG. |
 
 ---
 
