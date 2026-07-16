@@ -75,7 +75,7 @@ func standardFields() []Field {
 		{ID: StandardLastName, DisplayName: "Last Name", LookupKey: "lastname",
 			Aliases: []string{"lastname", "last", "lname", "surname", "familyname", "family_name"}, Standard: true},
 		{ID: StandardEmail, DisplayName: "Email", LookupKey: "email",
-			Aliases: []string{"email", "emailaddress", "email_address", "mail", "e_mail", "e_mail_address"},
+			Aliases:  []string{"email", "emailaddress", "email_address", "mail", "e_mail", "e_mail_address"},
 			Standard: true, Required: true},
 	}
 }
@@ -132,8 +132,8 @@ func NewSchema(headers []string) *Schema {
 	}
 
 	// Track custom fields by canonical ID so we can detect collisions.
-	customIndex := map[string]int{}          // id -> index into s.Fields
-	collisionNames := map[string][]string{}  // id -> display names contributing to a collision
+	customIndex := map[string]int{}         // id -> index into s.Fields
+	collisionNames := map[string][]string{} // id -> display names contributing to a collision
 
 	for _, h := range headers {
 		display := strings.TrimSpace(h)

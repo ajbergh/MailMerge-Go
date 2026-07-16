@@ -28,6 +28,7 @@ import "time"
 // are optional but enable personalization via merge fields.
 // CustomFields contains any additional columns from the import file.
 type Contact struct {
+	ID           string            `json:"id"`                     // Stable per-import identifier for selection/dedup/editing
 	FirstName    string            `json:"firstName"`              // Recipient's first name (optional)
 	LastName     string            `json:"lastName"`               // Recipient's last name (optional)
 	Email        string            `json:"email"`                  // Recipient's email address (required)
