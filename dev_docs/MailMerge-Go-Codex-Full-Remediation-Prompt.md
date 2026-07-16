@@ -6,6 +6,15 @@
 
 **Branch:** `remediation/full-remediation` · **Last updated:** 2026-07-16
 
+**Progress summary:** Backend correctness/architecture core is implemented and unit-tested
+without Outlook: canonical merge fields, unified renderer, `net/mail` validation,
+duplicate policy, validated `SendOptions`, full preflight, typed campaign results,
+`EmailSender` + `FakeSender`, dedicated Outlook STA worker (COM isolated from the
+runner), HTML escaping + sanitization, suppression list, atomic persistence.
+`go build ./...`, `go vet ./...`, and `go test ./backend/...` all pass; the backend
+cross-compiles for Linux. Remaining: frontend refactor/wiring, campaign persistence
+store, CI/packaging, docs. See table.
+
 **Baseline (captured on branch creation):**
 - `go build ./...` failed: `pattern all:frontend/dist: no matching files found` (root package cannot build until the frontend is built or a `frontend/dist` stub exists).
 - `go vet ./...` failed for the same reason.
@@ -16,39 +25,39 @@
 
 | # | Milestone / Section | Status | Notes |
 |---|---|---|---|
-| — | Baseline, branch, build scaffolding | 🚧 | Feature branch created; `frontend/dist` stub added so root builds. |
-| 1.1 | Canonical merge-field system | ⏳ | |
-| 1.2 | Unified template rendering | ⏳ | |
-| 1.3 | Representative test sends | ⏳ | |
-| 1.4 | Campaign preflight | ⏳ | |
-| 1.5 | Email validation (`net/mail`) | ⏳ | |
-| 1.6 | Duplicate recipient resolution | ⏳ | |
-| 1.7 | Attachment remediation | ⏳ | |
-| 1.8 | Sending settings affect behavior | ⏳ | |
-| 1.9 | Typed campaign results / fatal errors | ⏳ | |
-| 2.10 | EmailSender abstraction + FakeSender | ⏳ | |
-| 2.11 | Dedicated Outlook STA worker | ⏳ | |
-| 2.12 | Outlook capability detection | ⏳ | |
-| 2.13 | Cancellation / pause / resume | ⏳ | |
-| 2.14 | Retry semantics | ⏳ | |
-| 3.15 | Safe template storage | ⏳ | |
-| 3.16 | Safe settings persistence | ⏳ | |
-| 3.17 | HTML security | ⏳ | |
-| 3.18 | Campaign persistence | ⏳ | |
-| 3.19 | Suppression / unsubscribe | ⏳ | |
-| 4.20 | Contact import improvements | ⏳ | |
-| 4.21 | Contact editing and review | ⏳ | |
-| 4.22 | Frontend state refactor | ⏳ | |
+| — | Baseline, branch, build scaffolding | ✅ | Feature branch + `frontend/dist` stub; baseline recorded. |
+| 1.1 | Canonical merge-field system | ✅ | `backend/mergefield`: canonical IDs, collision detection, aliases, tests. |
+| 1.2 | Unified template rendering | ✅ | Single `campaign.Renderer` → one `RenderedMessage` for preview/test/bulk. |
+| 1.3 | Representative test sends | ✅ | Backend: full contact, no `{{email}}` overwrite by default, same pipeline. Frontend wiring pending. |
+| 1.4 | Campaign preflight | ✅ | `campaign.Preflighter` full checklist; `PreflightCampaign` binding. Frontend display pending. |
+| 1.5 | Email validation (`net/mail`) | ✅ | `backend/email`; comma/semicolon lists; tests. |
+| 1.6 | Duplicate recipient resolution | ✅ | Policy engine (keep first/last/exclude/all/manual); applied pre-count; tests. |
+| 1.7 | Attachment remediation | 🚧 | Backend resolves/validates (incl. personalized paths); frontend drag-drop/size wiring pending. |
+| 1.8 | Sending settings affect behavior | ✅ | Validated `SendOptions` from settings; 500ms hard-code removed; tests. Sound/auto-save pending. |
+| 1.9 | Typed campaign results / fatal errors | ✅ | Typed states; fatal ≠ empty success; tests. |
+| 2.10 | EmailSender abstraction + FakeSender | ✅ | Interface + deterministic FakeSender + capabilities; tests. |
+| 2.11 | Dedicated Outlook STA worker | ✅ | `backend/outlook` locked STA thread; COM out of runner; non-Windows stub. Needs on-device COM test. |
+| 2.12 | Outlook capability detection | ✅ | Actionable status; no false New-Outlook claims. |
+| 2.13 | Cancellation / pause / resume | ✅ | Context cancellation + `CancelCampaign`; cancelled recipients preserved. Pause/resume deferred. |
+| 2.14 | Retry semantics | ✅ | Attempt-history retry, no double count; `RetryFailed` binding; tests. |
+| 3.15 | Safe template storage | 🚧 | Atomic helper ready; hardening in progress. |
+| 3.16 | Safe settings persistence | 🚧 | Schema version + policy added; validation/merge in progress. |
+| 3.17 | HTML security | ✅ | Escape merge values + bluemonday sanitize authored HTML; tests. |
+| 3.18 | Campaign persistence | ⏳ | Repository interfaces planned (JSON first). |
+| 3.19 | Suppression / unsubscribe | ✅ | `SuppressionService` (atomic, normalized); preflight blocks. Frontend UI pending. |
+| 4.20 | Contact import improvements | ⏳ | BOM/limits/sheet-selection pending. |
+| 4.21 | Contact editing and review | 🚧 | Stable `Contact.ID` added; UI editing pending. |
+| 4.22 | Frontend state refactor | ⏳ | Hooks/wiring to new bindings pending. |
 | 4.23 | Accessibility | ⏳ | |
-| 5.24 | Go tests | ⏳ | |
-| 5.25 | Windows Outlook integration tests | ⏳ | |
+| 5.24 | Go tests | ✅ | mergefield/email/campaign/htmlutil covered; more to add for services. |
+| 5.25 | Windows Outlook integration tests | ⏳ | Build-tagged harness pending. |
 | 5.26 | Frontend tests | ⏳ | |
-| 5.27 | Static analysis & formatting | ⏳ | |
+| 5.27 | Static analysis & formatting | 🚧 | gofmt/vet clean; golangci config + frontend lint pending. |
 | 5.28 | GitHub Actions CI | ⏳ | |
-| 5.29 | Reproducible builds | ⏳ | |
+| 5.29 | Reproducible builds | 🚧 | Version ldflags vars added; build.ps1/CI pinning pending. |
 | 5.30 | Packaging and release quality | ⏳ | |
-| 6.31 | Microsoft Graph readiness | ⏳ | |
-| — | Documentation remediation | ⏳ | |
+| 6.31 | Microsoft Graph readiness | ⏳ | Design doc + interface pending. |
+| — | Documentation remediation | ⏳ | README/ROADMAP/dev_docs pending. |
 
 ---
 

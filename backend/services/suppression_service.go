@@ -30,13 +30,9 @@ type SuppressionService struct {
 
 // NewSuppressionService loads (or initializes) the suppression list.
 func NewSuppressionService() (*SuppressionService, error) {
-	appData, err := os.UserConfigDir()
+	dir, err := configDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config directory: %w", err)
-	}
-	dir := filepath.Join(appData, "MailMergeGo")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("failed to create config directory: %w", err)
 	}
 	s := &SuppressionService{
 		set:      map[string]string{},

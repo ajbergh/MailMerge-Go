@@ -1,15 +1,13 @@
 /*
 Settings Service - Application Settings Persistence
 
-Phase 2 (v1.3): New service for managing user preferences and app settings.
-
-This service handles:
-  - Loading settings from disk on startup
-  - Saving settings when changed
-  - Default settings initialization
-  - Recent files management
-
-Settings are stored as a JSON file in the user's app data directory.
+Settings are stored as a JSON file in the user's app data directory. This
+service:
+  - Merges stored settings over defaults so new fields adopt sane values.
+  - Validates settings before they replace the current object.
+  - Versions the schema and migrates older files forward.
+  - Writes atomically (temp file + rename).
+  - Returns copies of slices/maps so callers cannot mutate internal state.
 */
 package services
 
@@ -18,151 +16,241 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"MailMergeApp/backend/models"
 )
 
 // SettingsService manages application settings with persistence to disk.
 type SettingsService struct {
-	settings     *models.AppSettings // Current settings
-	settingsPath string              // Path to settings file
+	mu           sync.RWMutex
+	settings     *models.AppSettings
+	settingsPath string
 }
 
-// NewSettingsService creates a new SettingsService and loads existing settings.
-// Creates the storage directory and default settings if they don't exist.
+// NewSettingsService loads (or initializes) settings.
 func NewSettingsService() (*SettingsService, error) {
-	// Get user's app data directory
-	appData, err := os.UserConfigDir()
+	dir, err := configDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config directory: %w", err)
 	}
 
-	configDir := filepath.Join(appData, "MailMergeGo")
-
-	// Create config directory if needed
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create config directory: %w", err)
-	}
-
 	ss := &SettingsService{
 		settings:     models.DefaultSettings(),
-		settingsPath: filepath.Join(configDir, "settings.json"),
+		settingsPath: filepath.Join(dir, "settings.json"),
 	}
-
-	// Load existing settings if available
-	if err := ss.loadSettings(); err != nil {
-		// Non-fatal: use default settings
+	if err := ss.load(); err != nil {
 		fmt.Printf("Using default settings: %v\n", err)
 	}
-
 	return ss, nil
 }
 
-// loadSettings reads settings from disk.
-func (ss *SettingsService) loadSettings() error {
+// load reads settings, merging over defaults and migrating older schemas.
+func (ss *SettingsService) load() error {
 	data, err := os.ReadFile(ss.settingsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// No settings file yet, save defaults
-			return ss.saveSettings()
+			return ss.persist() // write defaults
 		}
 		return fmt.Errorf("failed to read settings: %w", err)
 	}
 
-	var settings models.AppSettings
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return fmt.Errorf("failed to parse settings: %w", err)
+	// Merge over defaults: fields absent in the file keep their default value.
+	merged := models.DefaultSettings()
+	if err := json.Unmarshal(data, merged); err != nil {
+		// Corrupted file: back it up and fall back to defaults rather than crash.
+		_ = os.Rename(ss.settingsPath, ss.settingsPath+".corrupt")
+		ss.settings = models.DefaultSettings()
+		_ = ss.persist()
+		return fmt.Errorf("corrupted settings file (backed up as .corrupt): %w", err)
 	}
 
-	ss.settings = &settings
+	migrated := migrateSettings(merged)
+	sanitizeSettings(migrated)
+	ss.settings = migrated
+
+	// Persist if we migrated or repaired anything.
+	if migrated.SchemaVersion != merged.SchemaVersion {
+		return ss.persist()
+	}
 	return nil
 }
 
-// saveSettings writes current settings to disk.
-func (ss *SettingsService) saveSettings() error {
-	data, err := json.MarshalIndent(ss.settings, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal settings: %w", err)
+// migrateSettings brings older schema versions up to date.
+func migrateSettings(s *models.AppSettings) *models.AppSettings {
+	if s.SchemaVersion < 1 {
+		if s.DuplicatePolicy == "" {
+			s.DuplicatePolicy = "keep_first"
+		}
+		s.SchemaVersion = 1
 	}
+	// Future migrations: if s.SchemaVersion < 2 { ... }
+	s.SchemaVersion = models.CurrentSettingsSchemaVersion
+	return s
+}
 
-	if err := os.WriteFile(ss.settingsPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write settings: %w", err)
+// persist writes the current settings atomically.
+func (ss *SettingsService) persist() error {
+	return atomicWriteJSON(ss.settingsPath, ss.settings)
+}
+
+// validateSettings returns an error if any field is out of range/invalid.
+func validateSettings(s models.AppSettings) error {
+	switch s.Theme {
+	case "light", "dark", "system":
+	default:
+		return fmt.Errorf("invalid theme: %s", s.Theme)
 	}
-
+	switch s.DefaultFormat {
+	case "html", "plaintext":
+	default:
+		return fmt.Errorf("invalid default format: %s", s.DefaultFormat)
+	}
+	if s.SendingDelay < 0 || s.SendingDelay > 60000 {
+		return fmt.Errorf("sending delay out of range (0-60000ms): %d", s.SendingDelay)
+	}
+	switch s.DuplicatePolicy {
+	case "", "keep_first", "keep_last", "exclude_all", "keep_all", "manual":
+	default:
+		return fmt.Errorf("invalid duplicate policy: %s", s.DuplicatePolicy)
+	}
 	return nil
 }
 
-// GetSettings returns the current application settings.
+// sanitizeSettings clamps/normalizes values in place (best-effort repair).
+func sanitizeSettings(s *models.AppSettings) {
+	if s.Theme != "light" && s.Theme != "dark" && s.Theme != "system" {
+		s.Theme = "light"
+	}
+	if s.DefaultFormat != "html" && s.DefaultFormat != "plaintext" {
+		s.DefaultFormat = "html"
+	}
+	if s.SendingDelay < 0 {
+		s.SendingDelay = 0
+	}
+	if s.SendingDelay > 60000 {
+		s.SendingDelay = 60000
+	}
+	if s.DuplicatePolicy == "" {
+		s.DuplicatePolicy = "keep_first"
+	}
+	if s.RecentFiles == nil {
+		s.RecentFiles = []string{}
+	}
+}
+
+// GetSettings returns a deep copy of the current settings.
 func (ss *SettingsService) GetSettings() *models.AppSettings {
-	// Return a copy to prevent external modification
-	copy := *ss.settings
-	return &copy
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	cp := *ss.settings
+	cp.RecentFiles = append([]string(nil), ss.settings.RecentFiles...)
+	return &cp
 }
 
-// UpdateSettings updates all settings and saves to disk.
+// UpdateSettings validates and replaces the settings.
 func (ss *SettingsService) UpdateSettings(settings models.AppSettings) error {
+	if err := validateSettings(settings); err != nil {
+		return err
+	}
+	sanitizeSettings(&settings)
+	settings.SchemaVersion = models.CurrentSettingsSchemaVersion
+
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	// Preserve recent files if the incoming payload omitted them.
+	if settings.RecentFiles == nil {
+		settings.RecentFiles = append([]string(nil), ss.settings.RecentFiles...)
+	}
 	ss.settings = &settings
-	return ss.saveSettings()
+	return ss.persist()
 }
 
 // GetTheme returns the current theme setting.
 func (ss *SettingsService) GetTheme() string {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
 	return ss.settings.Theme
 }
 
-// SetTheme updates the theme and saves to disk.
+// SetTheme updates the theme and saves.
 func (ss *SettingsService) SetTheme(theme string) error {
 	if theme != "light" && theme != "dark" && theme != "system" {
 		return fmt.Errorf("invalid theme: %s (must be light, dark, or system)", theme)
 	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	ss.settings.Theme = theme
-	return ss.saveSettings()
+	return ss.persist()
 }
 
 // GetSendingDelay returns the delay between emails in milliseconds.
 func (ss *SettingsService) GetSendingDelay() int {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
 	return ss.settings.SendingDelay
 }
 
-// SetSendingDelay updates the sending delay and saves to disk.
+// SetSendingDelay updates the sending delay and saves.
 func (ss *SettingsService) SetSendingDelay(delay int) error {
-	if delay < 100 || delay > 5000 {
-		return fmt.Errorf("invalid delay: %d (must be 100-5000ms)", delay)
+	if delay < 0 || delay > 60000 {
+		return fmt.Errorf("invalid delay: %d (must be 0-60000ms)", delay)
 	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	ss.settings.SendingDelay = delay
-	return ss.saveSettings()
+	return ss.persist()
 }
 
-// GetRecentFiles returns the list of recently opened contact files.
+// pathKey normalizes a file path for duplicate comparison (case-insensitive on
+// Windows).
+func pathKey(p string) string {
+	c := filepath.Clean(p)
+	if filepath.Separator == '\\' {
+		return strings.ToLower(c)
+	}
+	return c
+}
+
+// GetRecentFiles returns a copy of the recent files that still exist on disk.
 func (ss *SettingsService) GetRecentFiles() []string {
-	return ss.settings.RecentFiles
-}
-
-// AddRecentFile adds a file to the recent files list.
-// Maintains a maximum of 10 files, removing the oldest if needed.
-func (ss *SettingsService) AddRecentFile(filePath string) error {
-	// Remove if already in list (to move to front)
-	recentFiles := make([]string, 0, len(ss.settings.RecentFiles))
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	out := make([]string, 0, len(ss.settings.RecentFiles))
 	for _, f := range ss.settings.RecentFiles {
-		if f != filePath {
-			recentFiles = append(recentFiles, f)
+		if _, err := os.Stat(f); err == nil {
+			out = append(out, f)
 		}
 	}
-
-	// Add to front of list
-	recentFiles = append([]string{filePath}, recentFiles...)
-
-	// Keep only last 10
-	if len(recentFiles) > 10 {
-		recentFiles = recentFiles[:10]
-	}
-
-	ss.settings.RecentFiles = recentFiles
-	return ss.saveSettings()
+	return out
 }
 
-// ClearRecentFiles removes all recent files.
+// AddRecentFile adds a file to the front of the recent list (max 10), removing
+// any prior occurrence (normalized comparison).
+func (ss *SettingsService) AddRecentFile(filePath string) error {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+
+	key := pathKey(filePath)
+	recent := make([]string, 0, len(ss.settings.RecentFiles)+1)
+	recent = append(recent, filePath)
+	for _, f := range ss.settings.RecentFiles {
+		if pathKey(f) != key {
+			recent = append(recent, f)
+		}
+	}
+	if len(recent) > 10 {
+		recent = recent[:10]
+	}
+	ss.settings.RecentFiles = recent
+	return ss.persist()
+}
+
+// ClearRecentFiles empties the recent files list.
 func (ss *SettingsService) ClearRecentFiles() error {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	ss.settings.RecentFiles = []string{}
-	return ss.saveSettings()
+	return ss.persist()
 }

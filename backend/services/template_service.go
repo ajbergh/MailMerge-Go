@@ -18,13 +18,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"MailMergeApp/backend/models"
 
 	"github.com/google/uuid"
 )
+
+// validTemplateID matches backend-generated IDs (UUIDs) and built-in IDs.
+// It deliberately forbids path separators and dots so a crafted ID cannot
+// traverse directories or target arbitrary files.
+var validTemplateID = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+const builtInPrefix = "builtin-"
+
+// isValidTemplateID reports whether id is a safe, backend-shaped identifier.
+func isValidTemplateID(id string) bool {
+	return id != "" && len(id) <= 128 && validTemplateID.MatchString(id)
+}
 
 // TemplateService manages email templates with persistence to disk.
 // All templates are stored in the user's app data folder.
@@ -36,16 +50,12 @@ type TemplateService struct {
 // NewTemplateService creates a new TemplateService and loads existing templates.
 // Creates the storage directory if it doesn't exist.
 func NewTemplateService() (*TemplateService, error) {
-	// Get user's app data directory
-	appData, err := os.UserConfigDir()
+	base, err := configDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config directory: %w", err)
 	}
-
-	storagePath := filepath.Join(appData, "MailMergeGo", "templates")
-
-	// Create storage directory if needed
-	if err := os.MkdirAll(storagePath, 0755); err != nil {
+	storagePath := filepath.Join(base, "templates")
+	if err := os.MkdirAll(storagePath, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create templates directory: %w", err)
 	}
 
@@ -191,33 +201,67 @@ func (ts *TemplateService) GetTemplate(id string) *models.EmailTemplate {
 	return nil
 }
 
-// SaveTemplate creates or updates a template.
-// Returns the saved template with updated timestamps.
+// SaveTemplate creates or updates a user template. The backend owns ID
+// generation; a client-supplied ID is only honored for updating an existing
+// user template. Built-in templates cannot be overwritten via a crafted ID.
 func (ts *TemplateService) SaveTemplate(template models.EmailTemplate) (*models.EmailTemplate, error) {
-	now := time.Now()
+	if err := validateTemplateContent(template); err != nil {
+		return nil, err
+	}
 
-	// Generate ID if new template
+	now := time.Now()
 	if template.ID == "" {
+		// New template: backend generates the ID.
 		template.ID = uuid.New().String()
 		template.CreatedAt = now
+	} else {
+		// Update path: the ID must be a safe, existing, non-built-in template.
+		if !isValidTemplateID(template.ID) {
+			return nil, fmt.Errorf("invalid template id")
+		}
+		if strings.HasPrefix(template.ID, builtInPrefix) {
+			return nil, fmt.Errorf("built-in templates cannot be overwritten")
+		}
+		existing, ok := ts.templates[template.ID]
+		if !ok {
+			return nil, fmt.Errorf("template not found: %s", template.ID)
+		}
+		if existing.IsBuiltIn {
+			return nil, fmt.Errorf("built-in templates cannot be overwritten")
+		}
+		template.CreatedAt = existing.CreatedAt
 	}
 	template.UpdatedAt = now
 	template.IsBuiltIn = false // User templates are never built-in
 
-	// Save to memory
-	ts.templates[template.ID] = &template
-
-	// Save to disk
+	// Persist durably before updating in-memory state.
 	if err := ts.saveTemplate(&template); err != nil {
 		return nil, fmt.Errorf("failed to save template: %w", err)
 	}
-
+	ts.templates[template.ID] = &template
 	return &template, nil
+}
+
+// validateTemplateContent checks template fields before persisting.
+func validateTemplateContent(t models.EmailTemplate) error {
+	if strings.TrimSpace(t.Name) == "" {
+		return fmt.Errorf("template name is required")
+	}
+	if len(t.Name) > 200 {
+		return fmt.Errorf("template name is too long")
+	}
+	if strings.TrimSpace(t.Subject) == "" && strings.TrimSpace(t.Body) == "" {
+		return fmt.Errorf("template must have a subject or body")
+	}
+	return nil
 }
 
 // DeleteTemplate removes a template by ID.
 // Built-in templates cannot be deleted, only hidden (not implemented yet).
 func (ts *TemplateService) DeleteTemplate(id string) error {
+	if !isValidTemplateID(id) {
+		return fmt.Errorf("invalid template id")
+	}
 	template, ok := ts.templates[id]
 	if !ok {
 		return fmt.Errorf("template not found: %s", id)
@@ -227,30 +271,25 @@ func (ts *TemplateService) DeleteTemplate(id string) error {
 		return fmt.Errorf("cannot delete built-in template")
 	}
 
-	// Remove from memory
-	delete(ts.templates, id)
-
-	// Remove file from disk
+	// Remove file from disk first, then in-memory state.
 	filePath := filepath.Join(ts.storagePath, id+".json")
 	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to delete template file: %w", err)
 	}
-
+	delete(ts.templates, id)
 	return nil
 }
 
-// saveTemplate writes a single template to disk.
+// saveTemplate writes a single template to disk atomically. The ID is validated
+// so the resulting path can never escape the storage directory.
 func (ts *TemplateService) saveTemplate(template *models.EmailTemplate) error {
-	data, err := json.MarshalIndent(template, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal template: %w", err)
+	if !isValidTemplateID(template.ID) {
+		return fmt.Errorf("invalid template id")
 	}
-
 	filePath := filepath.Join(ts.storagePath, template.ID+".json")
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
+	if err := atomicWriteJSON(filePath, template); err != nil {
 		return fmt.Errorf("failed to write template file: %w", err)
 	}
-
 	return nil
 }
 
