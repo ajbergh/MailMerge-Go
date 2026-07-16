@@ -15,6 +15,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Contact } from '../types';
 import { X, Eye, User, Paperclip, ChevronDown } from 'lucide-react';
+import DOMPurify from 'dompurify';
 
 /**
  * Props for the PreviewModal component
@@ -114,7 +115,9 @@ export function PreviewModal({
     // Clean up ReactQuill's HTML output:
     // 1. Remove empty paragraphs that only contain <br> (ReactQuill adds these for blank lines)
     // 2. Replace consecutive closing/opening p tags with line breaks to avoid double spacing
-    let cleanedHtml = html
+    // Sanitize before display (defense in depth; the iframe is also sandboxed
+    // without allow-scripts).
+    let cleanedHtml = DOMPurify.sanitize(html)
       // Convert <p><br></p> (empty lines from ReactQuill) to just <br> for single line break
       .replace(/<p><br><\/p>/gi, '<br>')
       // Handle <p><br/></p> variant

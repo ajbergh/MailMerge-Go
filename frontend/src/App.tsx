@@ -46,13 +46,17 @@ import { ProgressUpdate, ParseResult, EmailTemplate, AppSettings } from './types
 import './styles/app.css';
 
 // Import Wails bindings and models
-import { 
-  SelectContactFile, 
-  ParseContactFile, 
+import {
+  SelectContactFile,
+  ParseContactFile,
   SelectAttachments,
-  CheckOutlookInstalled,
+  GetFileInfo,
+  GetOutlookStatus,
   SendTestEmail,
   SendBulkEmails,
+  PreflightCampaign,
+  RetryFailed,
+  CancelCampaign,
   GetMergeFields,
   GetMergeFieldsFromHeaders,
   PreviewMergeForContact,
@@ -68,13 +72,14 @@ import {
   AddRecentFile,
   ClearRecentFiles
 } from '../wailsjs/go/main/App';
-import { models } from '../wailsjs/go/models';
+import { models, campaign } from '../wailsjs/go/models';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
 
 // Type aliases for cleaner code
 type Contact = models.Contact;
-type SendResult = models.SendResult;
-type EmailLog = models.EmailLog;
+type CampaignResult = campaign.CampaignResult;
+type PreflightResult = campaign.PreflightResult;
+type FileInfo = models.FileInfo;
 
 // Use Wails-generated types for Phase 2 features (avoid type mismatches)
 type WailsEmailTemplate = models.EmailTemplate;
@@ -96,8 +101,8 @@ function App() {
   const [parseWarnings, setParseWarnings] = useState<string[]>([]);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   
-  // Phase 1: Selection and filtering state
-  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
+  // Selection is keyed by stable contact ID (survives filtering/sorting).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [headers, setHeaders] = useState<string[]>([]);
   const [duplicates, setDuplicates] = useState<string[]>([]);
   
@@ -116,12 +121,16 @@ function App() {
 
   // Attachments state
   const [attachments, setAttachments] = useState<string[]>([]);
+  const [attachmentInfo, setAttachmentInfo] = useState<FileInfo[]>([]);
 
   // Sending state
   const [isSending, setIsSending] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [progress, setProgress] = useState<ProgressUpdate | null>(null);
   const [progressLogs, setProgressLogs] = useState<Array<{ email: string; status: string; message?: string; timestamp: string }>>([]);
-  const [sendResult, setSendResult] = useState<SendResult | null>(null);
+  const [sendResult, setSendResult] = useState<CampaignResult | null>(null);
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
+  const [lastRequest, setLastRequest] = useState<models.EmailRequest | null>(null);
 
   // Error/status state
   const [error, setError] = useState<string | null>(null);
@@ -236,8 +245,13 @@ function App() {
   useEffect(() => {
     const checkOutlook = async () => {
       try {
-        await CheckOutlookInstalled();
-        setOutlookStatus('ok');
+        const status = await GetOutlookStatus();
+        if (status.available) {
+          setOutlookStatus('ok');
+        } else {
+          setOutlookStatus('error');
+          setError(status.message || 'Outlook is not available');
+        }
       } catch (err: any) {
         setOutlookStatus('error');
         setError(`Outlook is not available: ${err.message || err}`);
@@ -315,9 +329,9 @@ function App() {
       
       // Phase 1: Select all contacts by default
       if (result.contacts && result.contacts.length > 0) {
-        setSelectedIndices(new Set(result.contacts.map((_, i) => i)));
+        setSelectedIds(new Set(result.contacts.map((c) => c.id)));
       } else {
-        setSelectedIndices(new Set());
+        setSelectedIds(new Set());
       }
       
       // Phase 1: Generate merge fields from headers
@@ -348,7 +362,7 @@ function App() {
       setFileName(null);
       setHeaders([]);
       setDuplicates([]);
-      setSelectedIndices(new Set());
+      setSelectedIds(new Set());
     } finally {
       setIsLoadingFile(false);
     }
@@ -376,10 +390,64 @@ function App() {
   }, []);
 
   /**
+   * Handle native file drop onto the attachment area. Wails exposes real file
+   * paths via the drop event's file objects (path property); fall back to the
+   * dialog when paths are unavailable.
+   */
+  const handleFilesDropped = useCallback((files: FileList) => {
+    const paths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const p = (files[i] as any).path as string | undefined;
+      if (p) paths.push(p);
+    }
+    if (paths.length > 0) {
+      setAttachments(prev => [...prev, ...paths]);
+    }
+  }, []);
+
+  /**
+   * Fetch backend file metadata (name/size) whenever the attachment list
+   * changes, so sizes and the total-size warning work reliably.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const infos = await Promise.all(
+        attachments.map(async (path) => {
+          try {
+            return await GetFileInfo(path);
+          } catch {
+            return new models.FileInfo({ name: path.split(/[/\\]/).pop() || path, path, size: 0 });
+          }
+        })
+      );
+      if (!cancelled) setAttachmentInfo(infos);
+    })();
+    return () => { cancelled = true; };
+  }, [attachments]);
+
+  /**
    * Send a test email to a specified address
    * Uses first contact's data for merge preview, or defaults
    * Phase 3: Now includes CC/BCC in test emails
    */
+  // Split CC/BCC into static vs template fields based on merge-field presence.
+  const splitCcBcc = useCallback(() => {
+    const ccHasMerge = cc.includes('{');
+    const bccHasMerge = bcc.includes('{');
+    return {
+      cc: ccHasMerge ? '' : cc,
+      bcc: bccHasMerge ? '' : bcc,
+      ccTemplate: ccHasMerge ? cc : '',
+      bccTemplate: bccHasMerge ? bcc : '',
+    };
+  }, [cc, bcc]);
+
+  const selectedContacts = useMemo(
+    () => contacts.filter((c) => selectedIds.has(c.id)),
+    [contacts, selectedIds]
+  );
+
   const handleSendTestEmail = useCallback(async () => {
     const testAddress = prompt('Enter test email address:');
     if (!testAddress) return;
@@ -387,28 +455,25 @@ function App() {
     try {
       setIsSending(true);
       setError(null);
-      
-      // Phase 3: Include CC/BCC in test email request
-      // Determine if CC/BCC have merge fields - if so, use as templates
-      const ccHasMergeFields = cc.includes('{');
-      const bccHasMergeFields = bcc.includes('{');
-      
+
+      const parts = splitCcBcc();
+      // Use the first selected contact (or first contact) so the test renders
+      // exactly like a real send, including custom fields.
+      const sample = selectedContacts[0] || contacts[0];
       const request = new models.TestEmailRequest({
         testAddress,
         subjectTemplate: subject,
         bodyTemplate: body,
         isHTML,
         attachments,
-        cc: ccHasMergeFields ? '' : cc,  // Static CC
-        bcc: bccHasMergeFields ? '' : bcc,  // Static BCC
-        ccTemplate: ccHasMergeFields ? cc : '',  // CC with merge fields
-        bccTemplate: bccHasMergeFields ? bcc : '',  // BCC with merge fields
-        sampleFirstName: contacts[0]?.firstName || 'John',
-        sampleLastName: contacts[0]?.lastName || 'Doe'
+        ...parts,
+        contact: sample,
+        overwriteEmail: false,
+        sampleFirstName: sample?.firstName || 'John',
+        sampleLastName: sample?.lastName || 'Doe',
       });
-      
+
       await SendTestEmail(request);
-      
       setSuccessMessage(`Test email sent successfully to ${testAddress}`);
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (err: any) {
@@ -416,127 +481,114 @@ function App() {
     } finally {
       setIsSending(false);
     }
-  }, [subject, body, isHTML, attachments, contacts, cc, bcc]);
+  }, [subject, body, isHTML, attachments, selectedContacts, contacts, splitCcBcc]);
 
   /**
-   * Send emails to all loaded contacts
-   * Shows confirmation dialog and tracks progress
-   * Phase 1: Now sends only to selected contacts
+   * Send to selected contacts through the backend campaign engine, which
+   * preflights, dedupes, applies suppression, and returns a typed result.
    */
   const handleSendAll = useCallback(async () => {
-    // Phase 1: Get only selected contacts
-    const selectedContacts = contacts.filter((_, i) => selectedIndices.has(i));
-    
     if (selectedContacts.length === 0) {
       setError('No contacts selected');
       return;
     }
-
     if (!subject.trim()) {
       setError('Please enter a subject');
       return;
     }
-
     if (!body.trim()) {
       setError('Please enter a message body');
       return;
     }
 
-    const confirmed = window.confirm(
-      `Are you sure you want to send ${selectedContacts.length} emails?\n\nThis action cannot be undone.`
-    );
-    if (!confirmed) return;
+    const request = new models.EmailRequest({
+      contacts: selectedContacts,
+      subjectTemplate: subject,
+      bodyTemplate: body,
+      isHTML,
+      attachments,
+      ...splitCcBcc(),
+    });
+
+    // Preflight first; block sending on any error.
+    let pf: PreflightResult;
+    try {
+      pf = await PreflightCampaign(request);
+    } catch (err: any) {
+      setError(`Preflight failed: ${err.message || err}`);
+      return;
+    }
+    setPreflight(pf);
+    if (!pf.canSend) {
+      setError(`Cannot send: ${pf.errors.map((e) => e.message).join('; ')}`);
+      return;
+    }
+
+    // Honor the confirm-before-send setting.
+    if (settings.confirmSend) {
+      const warn = pf.warnings.length > 0 ? `\n\nWarnings:\n- ${pf.warnings.map((w) => w.message).join('\n- ')}` : '';
+      const confirmed = window.confirm(
+        `Send ${pf.recipientCount} email(s)? This cannot be undone.${warn}`
+      );
+      if (!confirmed) return;
+    }
 
     try {
       setIsSending(true);
+      setIsCancelling(false);
       setError(null);
       setProgress(null);
       setProgressLogs([]);
       setSendResult(null);
-
-      // Phase 3: Include CC/BCC in bulk email request
-      // Determine if CC/BCC have merge fields - if so, use as templates
-      const ccHasMergeFields = cc.includes('{');
-      const bccHasMergeFields = bcc.includes('{');
-
-      const request = new models.EmailRequest({
-        contacts: selectedContacts,
-        subjectTemplate: subject,
-        bodyTemplate: body,
-        isHTML,
-        attachments,
-        cc: ccHasMergeFields ? '' : cc,  // Static CC
-        bcc: bccHasMergeFields ? '' : bcc,  // Static BCC
-        ccTemplate: ccHasMergeFields ? cc : '',  // CC with merge fields
-        bccTemplate: bccHasMergeFields ? bcc : ''  // BCC with merge fields
-      });
+      setLastRequest(request);
 
       const result = await SendBulkEmails(request);
-
       setSendResult(result);
     } catch (err: any) {
       setError(`Failed to send emails: ${err.message || err}`);
     } finally {
       setIsSending(false);
+      setIsCancelling(false);
     }
-  }, [contacts, selectedIndices, subject, body, isHTML, attachments, cc, bcc]);
+  }, [selectedContacts, subject, body, isHTML, attachments, splitCcBcc, settings.confirmSend]);
 
   /**
-   * Phase 1: Retry sending to failed contacts
-   * Re-queues failed contacts for another send attempt
+   * Retry only failed recipients via the backend, which appends attempts
+   * without double-counting successes.
    */
   const handleRetryFailed = useCallback(async () => {
-    if (!sendResult?.failedContacts || sendResult.failedContacts.length === 0) {
-      setError('No failed contacts to retry');
+    if (!lastRequest || !sendResult || sendResult.failed === 0) {
+      setError('No failed recipients to retry');
       return;
     }
-
-    const confirmed = window.confirm(
-      `Retry sending to ${sendResult.failedContacts.length} failed contacts?`
-    );
-    if (!confirmed) return;
-
+    if (settings.confirmSend && !window.confirm(`Retry ${sendResult.failed} failed recipient(s)?`)) {
+      return;
+    }
     try {
       setIsSending(true);
       setError(null);
       setProgress(null);
       setProgressLogs([]);
-
-      // Phase 3: Include CC/BCC in retry request (same logic as main send)
-      const ccHasMergeFields = cc.includes('{');
-      const bccHasMergeFields = bcc.includes('{');
-
-      const request = new models.EmailRequest({
-        contacts: sendResult.failedContacts,
-        subjectTemplate: subject,
-        bodyTemplate: body,
-        isHTML,
-        attachments,
-        cc: ccHasMergeFields ? '' : cc,
-        bcc: bccHasMergeFields ? '' : bcc,
-        ccTemplate: ccHasMergeFields ? cc : '',
-        bccTemplate: bccHasMergeFields ? bcc : ''
-      });
-
-      const result = await SendBulkEmails(request);
-
-      // Merge results: add successful retries to previous totals
-      setSendResult(prev => {
-        if (!prev) return result;
-        // Create a new SendResult with merged data
-        return new models.SendResult({
-          totalSent: prev.totalSent + result.totalSent,
-          totalFailed: result.totalFailed,
-          failedContacts: result.failedContacts,
-          logs: [...(prev.logs || []), ...(result.logs || [])]
-        });
-      });
+      const result = await RetryFailed(lastRequest);
+      setSendResult(result);
     } catch (err: any) {
       setError(`Failed to retry emails: ${err.message || err}`);
     } finally {
       setIsSending(false);
     }
-  }, [sendResult, subject, body, isHTML, attachments, cc, bcc]);
+  }, [lastRequest, sendResult, settings.confirmSend]);
+
+  /**
+   * Cancel the in-flight campaign. Unattempted recipients are marked cancelled.
+   */
+  const handleCancel = useCallback(async () => {
+    setIsCancelling(true);
+    try {
+      await CancelCampaign();
+    } catch (err) {
+      console.error('Cancel failed:', err);
+    }
+  }, []);
 
   /**
    * Phase 1: Handle preview email callback
@@ -581,11 +633,14 @@ function App() {
     setSubject('');
     setBody('');
     setAttachments([]);
+    setAttachmentInfo([]);
     setParseErrors([]);
     setParseWarnings([]);
-    setSelectedIndices(new Set());
+    setSelectedIds(new Set());
     setHeaders([]);
     setDuplicates([]);
+    setPreflight(null);
+    setLastRequest(null);
   }, []);
 
   /**
@@ -683,9 +738,9 @@ function App() {
       setDuplicates(result.duplicates || []);
       
       if (result.contacts && result.contacts.length > 0) {
-        setSelectedIndices(new Set(result.contacts.map((_, i) => i)));
+        setSelectedIds(new Set(result.contacts.map((c) => c.id)));
       } else {
-        setSelectedIndices(new Set());
+        setSelectedIds(new Set());
       }
       
       if (result.headers && result.headers.length > 0) {
@@ -710,7 +765,7 @@ function App() {
   }, []);
 
   // Phase 1: Selected contacts count and check
-  const selectedCount = selectedIndices.size;
+  const selectedCount = selectedIds.size;
   const canSend = selectedCount > 0 && subject.trim() && body.trim() && !isSending && outlookStatus === 'ok';
 
   /**
@@ -855,11 +910,11 @@ function App() {
 
         {/* Show results if complete */}
         {sendResult ? (
-          <ResultsSummary 
-            result={sendResult} 
+          <ResultsSummary
+            result={sendResult}
             onExportLogs={handleExportLogs}
             onReset={handleReset}
-            onRetryFailed={sendResult.failedContacts && sendResult.failedContacts.length > 0 ? handleRetryFailed : undefined}
+            onRetryFailed={sendResult.failed > 0 ? handleRetryFailed : undefined}
           />
         ) : (
           <>
@@ -874,10 +929,10 @@ function App() {
                   errors={parseErrors}
                   isLoading={isLoadingFile}
                 />
-                <ContactTable 
+                <ContactTable
                   contacts={contacts}
-                  selectedIndices={selectedIndices}
-                  onSelectionChange={setSelectedIndices}
+                  selectedIds={selectedIds}
+                  onSelectionChange={setSelectedIds}
                   duplicates={duplicates}
                 />
               </div>
@@ -919,6 +974,8 @@ function App() {
                   attachments={attachments}
                   onAddAttachments={handleAddAttachments}
                   onRemoveAttachment={handleRemoveAttachment}
+                  onFilesDropped={handleFilesDropped}
+                  attachmentInfo={attachmentInfo}
                 />
               </div>
             </div>
@@ -975,6 +1032,16 @@ function App() {
                       </>
                     )}
                   </button>
+                  {isSending && (
+                    <button
+                      className="btn btn-warning btn-lg"
+                      onClick={handleCancel}
+                      disabled={isCancelling}
+                      aria-label="Cancel the current send"
+                    >
+                      {isCancelling ? 'Cancelling…' : 'Cancel'}
+                    </button>
+                  )}
                 </div>
                 
                 {!canSend && !isSending && (

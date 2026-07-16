@@ -30,6 +30,7 @@ export { models } from '../../wailsjs/go/models';
  * Phase 1: Added customFields for dynamic merge field support
  */
 export type Contact = {
+  id: string;                           // Stable per-import identifier (selection/dedupe/editing)
   firstName: string;                    // Recipient's first name (for personalization)
   lastName: string;                     // Recipient's last name (for personalization)
   email: string;                        // Recipient's email address (required)

@@ -34,6 +34,10 @@ export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
 }
 
+export function GetCampaignHistory() {
+  return window['go']['main']['App']['GetCampaignHistory']();
+}
+
 export function GetFileInfo(arg1) {
   return window['go']['main']['App']['GetFileInfo'](arg1);
 }

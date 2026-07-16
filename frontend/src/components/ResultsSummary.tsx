@@ -1,58 +1,57 @@
 /**
- * ResultsSummary Component - Send Operation Results Display
- * 
- * This component displays the final results after a bulk email send operation.
- * It provides a summary of successes and failures, a detailed log table,
- * and options to export logs or start a new merge.
- * 
- * Features:
- * - Summary cards showing total, successful, and failed counts
- * - Detailed log table with status, name, email, error, and timestamp
- * - Export to CSV functionality for record-keeping
- * - "Start New Merge" button to reset the application state
- * - Phase 1: "Retry Failed" button to re-send to failed contacts
- * 
- * The component is only rendered after a send operation completes.
+ * ResultsSummary Component - Campaign Results Display
+ *
+ * Displays the typed CampaignResult from the backend engine: overall state
+ * (completed / cancelled / preflight_failed / runtime_failed), accurate counts
+ * (submitted / failed / skipped / cancelled), any fatal error or preflight
+ * errors, and a per-recipient table built from attempt history. A fatal
+ * failure is never shown as a zero-failure success.
  */
-import { models } from '../../wailsjs/go/models';
-import { CheckCircle, XCircle, Download, Users, Mail, RefreshCw } from 'lucide-react';
+import { campaign, models } from '../../wailsjs/go/models';
+import { CheckCircle, XCircle, Download, Users, Mail, RefreshCw, AlertTriangle, Ban } from 'lucide-react';
 
-// Type aliases for cleaner code
-type EmailLog = models.EmailLog;
-type SendResult = models.SendResult;
+type CampaignResult = campaign.CampaignResult;
+type RecipientResult = campaign.RecipientResult;
 
-/**
- * Props for the ResultsSummary component
- */
 interface ResultsSummaryProps {
-  /** Send result data from backend (null if not yet sent) */
-  result: SendResult | null;
-  /** Callback to export logs to CSV file */
-  onExportLogs: (logs: EmailLog[]) => void;
-  /** Callback to reset app state for new merge operation */
+  result: CampaignResult | null;
+  onExportLogs: (logs: models.EmailLog[]) => void;
   onReset: () => void;
-  /** Phase 1: Optional callback to retry sending to failed contacts */
   onRetryFailed?: () => void;
 }
 
-/**
- * ResultsSummary - Renders the send results card
- * 
- * Only renders if result is not null. Shows summary stats,
- * detailed log table, and action buttons.
- * Phase 1: Added retry failed functionality.
- */
+const stateLabel: Record<string, { text: string; className: string }> = {
+  completed: { text: 'Completed', className: 'badge-success' },
+  cancelled: { text: 'Cancelled', className: 'badge-warning' },
+  preflight_failed: { text: 'Blocked by preflight', className: 'badge-error' },
+  runtime_failed: { text: 'Failed (sender error)', className: 'badge-error' },
+};
+
+function recipientsToLogs(result: CampaignResult): models.EmailLog[] {
+  return (result.recipientResults || []).map((r: RecipientResult) => {
+    const last = r.attempts && r.attempts.length > 0 ? r.attempts[r.attempts.length - 1] : undefined;
+    return new models.EmailLog({
+      firstName: r.firstName,
+      lastName: r.lastName,
+      email: r.email,
+      status: r.status === 'submitted' ? 'Success' : r.status === 'failed' ? 'Failure' : r.status,
+      errorMessage: last?.error || '',
+      timestamp: last?.timestamp,
+    });
+  });
+}
+
 export function ResultsSummary({ result, onExportLogs, onReset, onRetryFailed }: ResultsSummaryProps) {
   if (!result) return null;
 
-  /**
-   * Format timestamp for display in log table
-   */
-  const formatTimestamp = (timestamp: string) => {
+  const badge = stateLabel[result.state] || { text: result.state, className: 'badge' };
+  const logs = recipientsToLogs(result);
+
+  const formatTimestamp = (timestamp: any) => {
     try {
       return new Date(timestamp).toLocaleString();
     } catch {
-      return timestamp;
+      return String(timestamp ?? '');
     }
   };
 
@@ -62,76 +61,93 @@ export function ResultsSummary({ result, onExportLogs, onReset, onRetryFailed }:
         <h2>
           <Mail size={20} />
           Send Results
+          <span className={`badge ${badge.className}`} style={{ marginLeft: '0.75rem' }}>{badge.text}</span>
         </h2>
       </div>
       <div className="card-body">
-        {/* Summary Cards */}
+        {/* Fatal error banner */}
+        {result.fatalError && (
+          <div className="alert alert-error" role="alert" style={{ marginBottom: '1rem' }}>
+            <AlertTriangle size={18} />
+            <span><strong>Sender error:</strong> {result.fatalError}</span>
+          </div>
+        )}
+
+        {/* Preflight errors (send was blocked) */}
+        {result.state === 'preflight_failed' && result.preflight && (
+          <div className="alert alert-error" role="alert" style={{ marginBottom: '1rem' }}>
+            <AlertTriangle size={18} />
+            <div>
+              <strong>The campaign was not sent. Fix these issues:</strong>
+              <ul style={{ margin: '0.5rem 0 0 1rem' }}>
+                {result.preflight.errors.map((e, i) => (
+                  <li key={i}>{e.message}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {/* Summary cards */}
         <div className="results-summary">
           <div className="result-card total">
-            <div className="number">{result.totalSent + result.totalFailed}</div>
-            <div className="label">
-              <Users size={16} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />
-              Total Processed
-            </div>
+            <div className="number">{result.attempted + result.skipped + result.cancelled}</div>
+            <div className="label"><Users size={16} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />Recipients</div>
           </div>
           <div className="result-card success">
-            <div className="number">{result.totalSent}</div>
-            <div className="label">
-              <CheckCircle size={16} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />
-              Successful
-            </div>
+            <div className="number">{result.submitted}</div>
+            <div className="label"><CheckCircle size={16} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />Submitted</div>
           </div>
           <div className="result-card failed">
-            <div className="number">{result.totalFailed}</div>
-            <div className="label">
-              <XCircle size={16} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />
-              Failed
-            </div>
+            <div className="number">{result.failed}</div>
+            <div className="label"><XCircle size={16} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />Failed</div>
           </div>
+          {(result.skipped > 0 || result.cancelled > 0) && (
+            <div className="result-card total">
+              <div className="number">{result.skipped + result.cancelled}</div>
+              <div className="label"><Ban size={16} style={{ verticalAlign: 'middle', marginRight: '0.25rem' }} />Skipped/Cancelled</div>
+            </div>
+          )}
         </div>
 
-        {/* Logs Table */}
-        {result.logs.length > 0 && (
-          <div className="table-container scrollable-table" style={{ marginBottom: '1rem' }}>
+        <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+          &ldquo;Submitted&rdquo; means accepted by Outlook for sending; it does not confirm delivery.
+        </p>
+
+        {/* Per-recipient table */}
+        {logs.length > 0 && (
+          <div className="table-container scrollable-table" style={{ margin: '1rem 0' }}>
             <table className="table">
               <thead>
-                <tr>
-                  <th>Status</th>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Error</th>
-                  <th>Timestamp</th>
-                </tr>
+                <tr><th>Status</th><th>Name</th><th>Email</th><th>Attempts</th><th>Error</th><th>Last attempt</th></tr>
               </thead>
               <tbody>
-                {result.logs.map((log, index) => (
-                  <tr key={index}>
-                    <td>
-                      <span className={`badge ${log.status === 'Success' ? 'badge-success' : 'badge-error'}`}>
-                        {log.status === 'Success' ? (
-                          <CheckCircle size={12} style={{ marginRight: '0.25rem' }} />
-                        ) : (
-                          <XCircle size={12} style={{ marginRight: '0.25rem' }} />
-                        )}
-                        {log.status}
-                      </span>
-                    </td>
-                    <td>{log.firstName} {log.lastName}</td>
-                    <td>{log.email}</td>
-                    <td>
-                      {log.errorMessage ? (
-                        <span style={{ color: 'var(--danger)', fontSize: '0.8125rem' }}>
-                          {log.errorMessage}
+                {result.recipientResults.map((r, index) => {
+                  const last = r.attempts && r.attempts.length > 0 ? r.attempts[r.attempts.length - 1] : undefined;
+                  const ok = r.status === 'submitted';
+                  return (
+                    <tr key={r.contactId || index}>
+                      <td>
+                        <span className={`badge ${ok ? 'badge-success' : r.status === 'failed' ? 'badge-error' : 'badge-warning'}`}>
+                          {r.status}
                         </span>
-                      ) : (
-                        <span style={{ color: 'var(--gray-400)' }}>—</span>
-                      )}
-                    </td>
-                    <td style={{ fontSize: '0.8125rem', color: 'var(--gray-500)' }}>
-                      {formatTimestamp(log.timestamp)}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td>{r.firstName} {r.lastName}</td>
+                      <td>{r.email}</td>
+                      <td>{r.attempts ? r.attempts.length : 0}</td>
+                      <td>
+                        {last?.error ? (
+                          <span style={{ color: 'var(--danger)', fontSize: '0.8125rem' }}>{last.error}</span>
+                        ) : (
+                          <span style={{ color: 'var(--gray-400)' }}>—</span>
+                        )}
+                      </td>
+                      <td style={{ fontSize: '0.8125rem', color: 'var(--gray-500)' }}>
+                        {last ? formatTimestamp(last.timestamp) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -139,30 +155,17 @@ export function ResultsSummary({ result, onExportLogs, onReset, onRetryFailed }:
 
         {/* Actions */}
         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-          <button 
-            className="btn btn-secondary"
-            onClick={() => onExportLogs(result.logs)}
-          >
+          <button className="btn btn-secondary" onClick={() => onExportLogs(logs)}>
             <Download size={16} />
-            Export Logs to CSV
+            Export Results to CSV
           </button>
-          {/* Phase 1: Retry Failed Button */}
-          {onRetryFailed && result.totalFailed > 0 && (
-            <button 
-              className="btn btn-warning"
-              onClick={onRetryFailed}
-              title={`Retry sending to ${result.totalFailed} failed contacts`}
-            >
+          {onRetryFailed && result.failed > 0 && (
+            <button className="btn btn-warning" onClick={onRetryFailed} title={`Retry ${result.failed} failed recipients`}>
               <RefreshCw size={16} />
-              Retry Failed ({result.totalFailed})
+              Retry Failed ({result.failed})
             </button>
           )}
-          <button 
-            className="btn btn-primary"
-            onClick={onReset}
-          >
-            Start New Merge
-          </button>
+          <button className="btn btn-primary" onClick={onReset}>Start New Merge</button>
         </div>
       </div>
     </div>

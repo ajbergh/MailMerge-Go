@@ -20,10 +20,12 @@
  * - Added CC and BCC fields with toggle visibility (collapsible)
  * - CC/BCC support merge field insertion for dynamic recipient lists
  */
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { Mail, Type, FileText, Wand2, ChevronDown, ChevronRight, Users } from 'lucide-react';
+import DOMPurify from 'dompurify';
+import { PreviewMerge } from '../../wailsjs/go/main/App';
 
 /**
  * Props for the EmailEditor component
@@ -155,21 +157,41 @@ export function EmailEditor({
     ]
   };
 
-  // Simple preview rendering
-  const getPreviewBody = () => {
-    let previewText = body
-      .replace(/\{FirstName\}/gi, 'John')
-      .replace(/\{LastName\}/gi, 'Doe')
-      .replace(/\{Email\}/gi, 'john.doe@example.com');
-    return previewText;
-  };
+  // Preview rendering uses the backend canonical renderer (the same one used by
+  // test and bulk sends) with sample data, rather than ad-hoc frontend
+  // replacements, so the preview matches what recipients receive.
+  const [previewSubject, setPreviewSubject] = useState('');
+  const [previewBody, setPreviewBody] = useState('');
+  const [previewCc, setPreviewCc] = useState('');
+  const [previewBcc, setPreviewBcc] = useState('');
 
-  const getPreviewSubject = () => {
-    return subject
-      .replace(/\{FirstName\}/gi, 'John')
-      .replace(/\{LastName\}/gi, 'Doe')
-      .replace(/\{Email\}/gi, 'john.doe@example.com');
-  };
+  useEffect(() => {
+    if (activeTab !== 'preview') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const main = await PreviewMerge(subject, body, '', '', '');
+        if (cancelled) return;
+        setPreviewSubject(main.subject || '');
+        setPreviewBody(main.body || '');
+        if (cc.trim()) {
+          const r = await PreviewMerge('', cc, '', '', '');
+          if (!cancelled) setPreviewCc(r.body || '');
+        } else {
+          setPreviewCc('');
+        }
+        if (bcc.trim()) {
+          const r = await PreviewMerge('', bcc, '', '', '');
+          if (!cancelled) setPreviewBcc(r.body || '');
+        } else {
+          setPreviewBcc('');
+        }
+      } catch (err) {
+        console.error('Preview render failed:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab, subject, body, cc, bcc]);
 
   return (
     <div className="card">
@@ -364,7 +386,7 @@ export function EmailEditor({
             <div style={{ marginBottom: '1rem' }}>
               <strong>Subject:</strong>
               <div style={{ padding: '0.75rem', background: 'var(--gray-50)', borderRadius: 'var(--border-radius)', marginTop: '0.5rem' }}>
-                {getPreviewSubject() || <span style={{ color: 'var(--gray-400)' }}>No subject</span>}
+                {previewSubject || <span style={{ color: 'var(--gray-400)' }}>No subject</span>}
               </div>
             </div>
             {/* CC/BCC Preview - Phase 3 */}
@@ -374,10 +396,7 @@ export function EmailEditor({
                   <div style={{ flex: '1 1 auto', minWidth: '200px' }}>
                     <strong>CC:</strong>
                     <div style={{ padding: '0.5rem 0.75rem', background: 'var(--gray-50)', borderRadius: 'var(--border-radius)', marginTop: '0.5rem', fontSize: '0.875rem' }}>
-                      {cc
-                        .replace(/\{FirstName\}/gi, 'John')
-                        .replace(/\{LastName\}/gi, 'Doe')
-                        .replace(/\{Email\}/gi, 'john.doe@example.com')}
+                      {previewCc}
                     </div>
                   </div>
                 )}
@@ -385,10 +404,7 @@ export function EmailEditor({
                   <div style={{ flex: '1 1 auto', minWidth: '200px' }}>
                     <strong>BCC:</strong>
                     <div style={{ padding: '0.5rem 0.75rem', background: 'var(--gray-50)', borderRadius: 'var(--border-radius)', marginTop: '0.5rem', fontSize: '0.875rem' }}>
-                      {bcc
-                        .replace(/\{FirstName\}/gi, 'John')
-                        .replace(/\{LastName\}/gi, 'Doe')
-                        .replace(/\{Email\}/gi, 'john.doe@example.com')}
+                      {previewBcc}
                     </div>
                   </div>
                 )}
@@ -406,10 +422,10 @@ export function EmailEditor({
                 }}
               >
                 {isHTML ? (
-                  <div dangerouslySetInnerHTML={{ __html: getPreviewBody() }} />
+                  <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(previewBody) }} />
                 ) : (
                   <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', margin: 0 }}>
-                    {getPreviewBody() || <span style={{ color: 'var(--gray-400)' }}>No body content</span>}
+                    {previewBody || <span style={{ color: 'var(--gray-400)' }}>No body content</span>}
                   </pre>
                 )}
               </div>
