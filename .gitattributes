@@ -1,0 +1,10 @@
+# Normalize line endings. Source files use LF in the repository; Git converts
+# on checkout per-platform. This keeps diffs and reproducible builds stable.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.ico binary
+*.woff2 binary
+*.exe binary
+*.dll binary

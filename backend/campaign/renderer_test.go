@@ -83,6 +83,18 @@ func TestRenderTestSendOverwriteEmailWhenRequested(t *testing.T) {
 	}
 }
 
+func TestRenderHTMLBodySanitizesAuthoredTemplate(t *testing.T) {
+	c := richCampaign()
+	c.BodyTemplate = `<p>Hi {{first_name}}</p><script>steal()</script><a href="javascript:evil()">x</a>`
+	msg := NewRenderer(c).Render(c, richContact())
+	if strings.Contains(strings.ToLower(msg.HTMLBody), "<script") {
+		t.Errorf("script not stripped: %q", msg.HTMLBody)
+	}
+	if strings.Contains(strings.ToLower(msg.HTMLBody), "javascript:") {
+		t.Errorf("javascript URL not stripped: %q", msg.HTMLBody)
+	}
+}
+
 func TestRenderHTMLBodyEscapesMergeValues(t *testing.T) {
 	c := richCampaign()
 	ct := richContact()
@@ -94,8 +106,8 @@ func TestRenderHTMLBodyEscapesMergeValues(t *testing.T) {
 	if !strings.Contains(msg.HTMLBody, "&lt;b&gt;") {
 		t.Errorf("expected escaped value in HTML body: %q", msg.HTMLBody)
 	}
-	// The authored <p> markup is preserved.
-	if !strings.Contains(msg.HTMLBody, "<p>") {
+	// The authored <p> markup is preserved (normalization may add inline styles).
+	if !strings.Contains(msg.HTMLBody, "<p") {
 		t.Errorf("template markup should be preserved: %q", msg.HTMLBody)
 	}
 }

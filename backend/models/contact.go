@@ -104,9 +104,16 @@ type TestEmailRequest struct {
 	BCC             string   `json:"bcc,omitempty"`         // Static BCC addresses (comma-separated)
 	CCTemplate      string   `json:"ccTemplate,omitempty"`  // CC with merge fields support
 	BCCTemplate     string   `json:"bccTemplate,omitempty"` // BCC with merge fields support
-	// Sample data for merge preview
+	// Sample data for merge preview (fallback when Contact is not provided)
 	SampleFirstName string `json:"sampleFirstName"` // Sample first name for preview
 	SampleLastName  string `json:"sampleLastName"`  // Sample last name for preview
+
+	// Contact is the selected recipient whose full data (including custom fields)
+	// is used to render the test message, exactly as a bulk send would.
+	Contact Contact `json:"contact"`
+	// OverwriteEmail, when true, makes TestAddress also replace the {{email}}
+	// merge value; otherwise {{email}} keeps the contact's own address.
+	OverwriteEmail bool `json:"overwriteEmail"`
 }
 
 // ProgressUpdate represents a real-time progress update during bulk sending.
@@ -163,24 +170,33 @@ type AppSettings struct {
 	DefaultFormat string `json:"defaultFormat"` // "html" or "plaintext"
 
 	// Sending Settings
-	SendingDelay   int  `json:"sendingDelay"`   // Delay between emails in milliseconds
-	ConfirmSend    bool `json:"confirmSend"`    // Show confirmation before sending
-	SoundEnabled   bool `json:"soundEnabled"`   // Play sound on completion
-	AutoSaveTempls bool `json:"autoSaveTempls"` // Auto-save templates on exit
+	SendingDelay    int    `json:"sendingDelay"`    // Delay between emails in milliseconds
+	ConfirmSend     bool   `json:"confirmSend"`     // Show confirmation before sending
+	SoundEnabled    bool   `json:"soundEnabled"`    // Play sound on completion
+	AutoSaveTempls  bool   `json:"autoSaveTempls"`  // Auto-save templates on exit
+	DuplicatePolicy string `json:"duplicatePolicy"` // keep_first|keep_last|exclude_all|keep_all|manual
+
+	// Schema version for settings migration/merge with defaults.
+	SchemaVersion int `json:"schemaVersion"`
 
 	// Recent Files
 	RecentFiles []string `json:"recentFiles"` // Last 10 opened contact files
 }
 
+// CurrentSettingsSchemaVersion is bumped when the settings shape changes.
+const CurrentSettingsSchemaVersion = 1
+
 // DefaultSettings returns the default application settings.
 func DefaultSettings() *AppSettings {
 	return &AppSettings{
-		Theme:          "light",
-		DefaultFormat:  "html",
-		SendingDelay:   500,
-		ConfirmSend:    true,
-		SoundEnabled:   true,
-		AutoSaveTempls: true,
-		RecentFiles:    []string{},
+		Theme:           "light",
+		DefaultFormat:   "html",
+		SendingDelay:    500,
+		ConfirmSend:     true,
+		SoundEnabled:    true,
+		AutoSaveTempls:  false,
+		DuplicatePolicy: "keep_first",
+		SchemaVersion:   CurrentSettingsSchemaVersion,
+		RecentFiles:     []string{},
 	}
 }

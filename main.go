@@ -33,12 +33,21 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// Build-time version information. These are overridden via -ldflags "-X" during
+// reproducible builds; see build.ps1 / CI. Defaults are used for `go run`.
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildDate = "unknown"
+)
+
 // main initializes and runs the Wails application.
 // It configures the application window, binds the backend App struct
 // to the frontend, and starts the event loop.
 func main() {
 	// Create an instance of the app structure
 	app := NewApp()
+	app.SetVersionInfo(Version, Commit, BuildDate)
 
 	// Create application with options
 	// The App struct is bound to the frontend, making all its exported
@@ -54,6 +63,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 1},
 		OnStartup:        app.startup,
+		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,
 		},

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"MailMergeApp/backend/email"
+	"MailMergeApp/backend/htmlutil"
 	"MailMergeApp/backend/mergefield"
 	"MailMergeApp/backend/models"
 )
@@ -44,9 +45,12 @@ func (r *Renderer) Render(c Campaign, contact models.Contact) RenderedMessage {
 	diags = append(diags, sd...)
 
 	// Render both bodies; the appropriate one is escaped for its context.
+	// HTML body: merge values are escaped during render, then the whole body is
+	// normalized for email clients and sanitized (defense in depth against any
+	// script/handler/unsafe-URL in the authored template).
 	htmlBody, hd := r.mf.Render(c.BodyTemplate, contact, true)
 	textBody, _ := r.mf.Render(c.BodyTemplate, contact, false)
-	msg.HTMLBody = htmlBody
+	msg.HTMLBody = htmlutil.Sanitize(htmlutil.NormalizeForEmail(htmlBody))
 	msg.TextBody = textBody
 	if c.IsHTML {
 		diags = append(diags, hd...)
