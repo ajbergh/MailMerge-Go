@@ -2,8 +2,6 @@
 
 A production-ready Windows desktop application for Outlook-based email mail merge. Built with Go backend (using COM bindings) and React frontend, bundled with Wails.
 
-![MailMerge Go Screenshot](build/appicon.png)
-
 ## Features
 
 ### Contact Management
