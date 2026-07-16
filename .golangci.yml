@@ -1,0 +1,26 @@
+# golangci-lint configuration for MailMerge-Go.
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gofmt
+    - misspell
+    - unconvert
+
+issues:
+  exclude-rules:
+    # COM automation and Wails event emits legitimately ignore some errors.
+    - path: backend/outlook/
+      linters: [errcheck]
+    # Test helpers frequently ignore write errors on temp files.
+    - path: _test\.go
+      linters: [errcheck]
+  max-issues-per-linter: 0
+  max-same-issues: 0

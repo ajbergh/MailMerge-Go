@@ -1,0 +1,54 @@
+name: Release
+
+# Releases are cut only from version tags, never from every commit.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.24.x"
+  NODE_VERSION: "20"
+  WAILS_VERSION: "v2.11.0"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+      - name: Frontend deps
+        working-directory: frontend
+        run: npm ci
+      - name: Build release
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}"
+          $date = (Get-Date -Format "yyyy-MM-dd")
+          wails build -platform windows/amd64 -ldflags "-X main.Version=$ver -X main.Commit=${{ github.sha }} -X main.BuildDate=$date"
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem build/bin/*.exe | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash + "  " + $_.Name
+          } | Out-File build/bin/SHA256SUMS.txt -Encoding ascii
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/bin/*.exe
+            build/bin/SHA256SUMS.txt
+          generate_release_notes: true
