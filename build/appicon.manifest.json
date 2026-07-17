@@ -1,0 +1,18 @@
+{
+  "name": "MailMerge Go application icon",
+  "source": "appicon.svg",
+  "exports": [
+    {
+      "path": "appicon.png",
+      "size": "1024x1024",
+      "purpose": "Wails application icon source"
+    },
+    {
+      "path": "windows/icon.ico",
+      "sizes": [16, 20, 24, 32, 40, 48, 64, 128, 256],
+      "purpose": "Windows executable and taskbar icon"
+    }
+  ],
+  "design": "Layered envelope plus merge badge, using the blue/cyan identity established by the README banner.",
+  "provenance": "Deterministic SVG artwork created for MailMerge Go. No third-party logos, raster images, or external fonts are embedded."
+}

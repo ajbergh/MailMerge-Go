@@ -8,11 +8,6 @@ A Windows desktop application for Outlook-based email mail merge. Built with a G
 backend (classic Outlook COM automation) and a React/TypeScript frontend, bundled
 with Wails v2.
 
-> **Status:** actively developed, not yet certified production-ready. Core sending
-> is guarded by a campaign preflight and a typed result model; automated tests
-> cover the campaign engine without Outlook. See [dev_docs/](dev_docs/) for
-> architecture and the [ROADMAP](ROADMAP.md) for what is implemented vs planned.
->
 > **Outlook support:** classic desktop Outlook only. The **New Outlook** app does
 > **not** expose COM automation and is not supported for sending.
 
