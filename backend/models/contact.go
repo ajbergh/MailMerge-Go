@@ -56,12 +56,12 @@ func (c *Contact) GetField(name string) string {
 // EmailLog represents the result of sending an email to a single contact.
 // Used for tracking success/failure and for generating export reports.
 type EmailLog struct {
-	FirstName    string    `json:"firstName"`              // Contact's first name
-	LastName     string    `json:"lastName"`               // Contact's last name
-	Email        string    `json:"email"`                  // Contact's email address
-	Status       string    `json:"status"`                 // "Success" or "Failure"
-	ErrorMessage string    `json:"errorMessage,omitempty"` // Error details if failed
-	Timestamp    time.Time `json:"timestamp"`              // When the send was attempted
+	FirstName    string    `json:"firstName"`                  // Contact's first name
+	LastName     string    `json:"lastName"`                   // Contact's last name
+	Email        string    `json:"email"`                      // Contact's email address
+	Status       string    `json:"status"`                     // "Success" or "Failure"
+	ErrorMessage string    `json:"errorMessage,omitempty"`     // Error details if failed
+	Timestamp    time.Time `json:"timestamp" ts_type:"string"` // When the send was attempted
 }
 
 // ParseResult represents the result of parsing a contact file (CSV or Excel).
@@ -151,14 +151,14 @@ type FileInfo struct {
 // Templates can be saved, loaded, and managed by the user.
 // Phase 2: New model for template persistence.
 type EmailTemplate struct {
-	ID        string    `json:"id"`        // Unique identifier (UUID)
-	Name      string    `json:"name"`      // User-friendly template name
-	Subject   string    `json:"subject"`   // Subject line with merge fields
-	Body      string    `json:"body"`      // Body content with merge fields
-	IsHTML    bool      `json:"isHTML"`    // True for HTML format, false for plain text
-	IsBuiltIn bool      `json:"isBuiltIn"` // True if this is a built-in template
-	CreatedAt time.Time `json:"createdAt"` // When the template was created
-	UpdatedAt time.Time `json:"updatedAt"` // When the template was last modified
+	ID        string    `json:"id"`                         // Unique identifier (UUID)
+	Name      string    `json:"name"`                       // User-friendly template name
+	Subject   string    `json:"subject"`                    // Subject line with merge fields
+	Body      string    `json:"body"`                       // Body content with merge fields
+	IsHTML    bool      `json:"isHTML"`                     // True for HTML format, false for plain text
+	IsBuiltIn bool      `json:"isBuiltIn"`                  // True if this is a built-in template
+	CreatedAt time.Time `json:"createdAt" ts_type:"string"` // When the template was created
+	UpdatedAt time.Time `json:"updatedAt" ts_type:"string"` // When the template was last modified
 }
 
 // AppSettings represents user preferences and application settings.

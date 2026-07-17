@@ -18,8 +18,8 @@ import (
 // run: enough to review it, retry failed recipients, and export results.
 type CampaignRecord struct {
 	ID             string                  `json:"id"`
-	StartedAt      time.Time               `json:"startedAt"`
-	FinishedAt     time.Time               `json:"finishedAt"`
+	StartedAt      time.Time               `json:"startedAt" ts_type:"string"`
+	FinishedAt     time.Time               `json:"finishedAt" ts_type:"string"`
 	Subject        string                  `json:"subject"`
 	IsHTML         bool                    `json:"isHTML"`
 	RecipientCount int                     `json:"recipientCount"`

@@ -186,7 +186,7 @@ type Attempt struct {
 	Number    int             `json:"number"`
 	Status    RecipientStatus `json:"status"`
 	Error     string          `json:"error,omitempty"`
-	Timestamp time.Time       `json:"timestamp"`
+	Timestamp time.Time       `json:"timestamp" ts_type:"string"`
 }
 
 // RecipientResult is the full history for a single recipient. Attempt history is

@@ -4,8 +4,7 @@ export namespace campaign {
 	    number: number;
 	    status: string;
 	    error?: string;
-	    // Go type: time
-	    timestamp: any;
+	    timestamp: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Attempt(source);
@@ -16,26 +15,8 @@ export namespace campaign {
 	        this.number = source["number"];
 	        this.status = source["status"];
 	        this.error = source["error"];
-	        this.timestamp = this.convertValues(source["timestamp"], null);
+	        this.timestamp = source["timestamp"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class SenderStatus {
 	    available: boolean;
@@ -321,8 +302,7 @@ export namespace models {
 	    email: string;
 	    status: string;
 	    errorMessage?: string;
-	    // Go type: time
-	    timestamp: any;
+	    timestamp: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EmailLog(source);
@@ -335,26 +315,8 @@ export namespace models {
 	        this.email = source["email"];
 	        this.status = source["status"];
 	        this.errorMessage = source["errorMessage"];
-	        this.timestamp = this.convertValues(source["timestamp"], null);
+	        this.timestamp = source["timestamp"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class EmailRequest {
 	    contacts: Contact[];
@@ -409,10 +371,8 @@ export namespace models {
 	    body: string;
 	    isHTML: boolean;
 	    isBuiltIn: boolean;
-	    // Go type: time
-	    createdAt: any;
-	    // Go type: time
-	    updatedAt: any;
+	    createdAt: string;
+	    updatedAt: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new EmailTemplate(source);
@@ -426,27 +386,9 @@ export namespace models {
 	        this.body = source["body"];
 	        this.isHTML = source["isHTML"];
 	        this.isBuiltIn = source["isBuiltIn"];
-	        this.createdAt = this.convertValues(source["createdAt"], null);
-	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	        this.createdAt = source["createdAt"];
+	        this.updatedAt = source["updatedAt"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class FileInfo {
 	    name: string;
@@ -584,10 +526,8 @@ export namespace storage {
 	
 	export class CampaignRecord {
 	    id: string;
-	    // Go type: time
-	    startedAt: any;
-	    // Go type: time
-	    finishedAt: any;
+	    startedAt: string;
+	    finishedAt: string;
 	    subject: string;
 	    isHTML: boolean;
 	    recipientCount: number;
@@ -601,8 +541,8 @@ export namespace storage {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
-	        this.startedAt = this.convertValues(source["startedAt"], null);
-	        this.finishedAt = this.convertValues(source["finishedAt"], null);
+	        this.startedAt = source["startedAt"];
+	        this.finishedAt = source["finishedAt"];
 	        this.subject = source["subject"];
 	        this.isHTML = source["isHTML"];
 	        this.recipientCount = source["recipientCount"];
