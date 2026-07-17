@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/mailmerge-go-banner.svg" alt="MailMerge Go — personalized Outlook campaigns, safely sent" width="100%">
+</p>
+
 # MailMerge Go
 
 A Windows desktop application for Outlook-based email mail merge. Built with a Go

@@ -1,0 +1,24 @@
+{
+  "asset": "mailmerge-go-banner.svg",
+  "dimensions": {
+    "width": 1600,
+    "height": 720
+  },
+  "format": "svg",
+  "usage": "Main README promotional hero",
+  "copySources": [
+    "README.md",
+    "ROADMAP.md",
+    "frontend/src/App.tsx",
+    "frontend/src/styles/app.css"
+  ],
+  "claims": [
+    "CSV and Excel contact import",
+    "Dynamic merge fields",
+    "Campaign preflight",
+    "Classic Outlook sending",
+    "Local-first storage and processing",
+    "Templates, attachments, live progress, and failed-recipient retry"
+  ],
+  "notes": "Deterministic vector composition. No generated raster imagery, external fonts, or third-party logos are embedded."
+}
