@@ -1,23 +1,12 @@
 /*
 Models Package - Data Structures
 
-This package defines all data structures used throughout the MailMerge application.
-These models are shared between the Go backend and the frontend via Wails bindings.
+This package defines the data structures shared across the MailMerge application.
+The Wails-bound types cover contacts and import diagnostics, composition requests,
+send logs, templates, settings, and attachment metadata.
 
 All structs with JSON tags are automatically serialized/deserialized when passed
 between Go and JavaScript.
-
-Phase 1 Updates (v1.2):
-  - Contact now includes CustomFields map for dynamic merge fields
-  - ParseResult includes Warnings and Duplicates for better feedback
-  - SendResult includes FailedContacts for retry functionality
-
-Phase 2 Updates (v1.3):
-  - Added EmailTemplate model for template persistence
-  - Added AppSettings model for user preferences
-
-Phase 3 Updates (v1.4):
-  - EmailRequest and TestEmailRequest now support CC and BCC fields
 */
 package models
 
@@ -28,6 +17,7 @@ import "time"
 // are optional but enable personalization via merge fields.
 // CustomFields contains any additional columns from the import file.
 type Contact struct {
+	ID           string            `json:"id"`                     // Stable per-import identifier for selection/dedup/editing
 	FirstName    string            `json:"firstName"`              // Recipient's first name (optional)
 	LastName     string            `json:"lastName"`               // Recipient's last name (optional)
 	Email        string            `json:"email"`                  // Recipient's email address (required)
@@ -55,17 +45,16 @@ func (c *Contact) GetField(name string) string {
 // EmailLog represents the result of sending an email to a single contact.
 // Used for tracking success/failure and for generating export reports.
 type EmailLog struct {
-	FirstName    string    `json:"firstName"`              // Contact's first name
-	LastName     string    `json:"lastName"`               // Contact's last name
-	Email        string    `json:"email"`                  // Contact's email address
-	Status       string    `json:"status"`                 // "Success" or "Failure"
-	ErrorMessage string    `json:"errorMessage,omitempty"` // Error details if failed
-	Timestamp    time.Time `json:"timestamp"`              // When the send was attempted
+	FirstName    string    `json:"firstName"`                  // Contact's first name
+	LastName     string    `json:"lastName"`                   // Contact's last name
+	Email        string    `json:"email"`                      // Contact's email address
+	Status       string    `json:"status"`                     // "Success" or "Failure"
+	ErrorMessage string    `json:"errorMessage,omitempty"`     // Error details if failed
+	Timestamp    time.Time `json:"timestamp" ts_type:"string"` // When the send was attempted
 }
 
 // ParseResult represents the result of parsing a contact file (CSV or Excel).
-// Contains both successfully parsed contacts and any parsing errors encountered.
-// Phase 1: Now includes warnings, duplicates, and detected column headers.
+// Contains successfully parsed contacts, normalized headers, and row diagnostics.
 type ParseResult struct {
 	Contacts   []Contact `json:"contacts"`             // Successfully parsed contacts
 	Errors     []string  `json:"errors,omitempty"`     // Row-level parsing errors
@@ -76,8 +65,8 @@ type ParseResult struct {
 }
 
 // EmailRequest represents a request to send bulk emails.
-// Contains all data needed to execute a mail merge operation.
-// Phase 3: Added CC and BCC fields for carbon copy recipients.
+// Contains all data needed to execute a mail merge operation, including optional
+// static and personalized CC/BCC values.
 type EmailRequest struct {
 	Contacts        []Contact `json:"contacts"`              // List of recipients
 	SubjectTemplate string    `json:"subjectTemplate"`       // Subject with merge fields
@@ -91,8 +80,8 @@ type EmailRequest struct {
 }
 
 // TestEmailRequest represents a request to send a single test email.
-// Includes sample data to preview how merge fields will be rendered.
-// Phase 3: Added CC and BCC fields for carbon copy recipients.
+// Includes a representative contact so merge fields render as they do in bulk
+// sending, plus optional static and personalized CC/BCC values.
 type TestEmailRequest struct {
 	TestAddress     string   `json:"testAddress"`           // Email address to send test to
 	SubjectTemplate string   `json:"subjectTemplate"`       // Subject with merge fields
@@ -103,9 +92,16 @@ type TestEmailRequest struct {
 	BCC             string   `json:"bcc,omitempty"`         // Static BCC addresses (comma-separated)
 	CCTemplate      string   `json:"ccTemplate,omitempty"`  // CC with merge fields support
 	BCCTemplate     string   `json:"bccTemplate,omitempty"` // BCC with merge fields support
-	// Sample data for merge preview
+	// Sample data for merge preview (fallback when Contact is not provided)
 	SampleFirstName string `json:"sampleFirstName"` // Sample first name for preview
 	SampleLastName  string `json:"sampleLastName"`  // Sample last name for preview
+
+	// Contact is the selected recipient whose full data (including custom fields)
+	// is used to render the test message, exactly as a bulk send would.
+	Contact Contact `json:"contact"`
+	// OverwriteEmail, when true, makes TestAddress also replace the {{email}}
+	// merge value; otherwise {{email}} keeps the contact's own address.
+	OverwriteEmail bool `json:"overwriteEmail"`
 }
 
 // ProgressUpdate represents a real-time progress update during bulk sending.
@@ -120,8 +116,8 @@ type ProgressUpdate struct {
 }
 
 // SendResult represents the final result of a bulk send operation.
-// Contains aggregate counts and detailed logs for each email sent.
-// Phase 1: Now includes FailedContacts for retry functionality.
+// Contains aggregate counts and detailed logs for each email sent. New campaign
+// flows use campaign.CampaignResult, which retains attempt history.
 type SendResult struct {
 	TotalSent      int        `json:"totalSent"`                // Number of emails sent successfully
 	TotalFailed    int        `json:"totalFailed"`              // Number of emails that failed
@@ -137,49 +133,56 @@ type FileInfo struct {
 	Size int64  `json:"size"` // File size in bytes
 }
 
-// ==================== Phase 2 Models ====================
+// ==================== Persisted Models ====================
 
 // EmailTemplate represents a saved email template for reuse.
 // Templates can be saved, loaded, and managed by the user.
-// Phase 2: New model for template persistence.
 type EmailTemplate struct {
-	ID        string    `json:"id"`        // Unique identifier (UUID)
-	Name      string    `json:"name"`      // User-friendly template name
-	Subject   string    `json:"subject"`   // Subject line with merge fields
-	Body      string    `json:"body"`      // Body content with merge fields
-	IsHTML    bool      `json:"isHTML"`    // True for HTML format, false for plain text
-	IsBuiltIn bool      `json:"isBuiltIn"` // True if this is a built-in template
-	CreatedAt time.Time `json:"createdAt"` // When the template was created
-	UpdatedAt time.Time `json:"updatedAt"` // When the template was last modified
+	ID        string    `json:"id"`                         // Unique identifier (UUID)
+	Name      string    `json:"name"`                       // User-friendly template name
+	Subject   string    `json:"subject"`                    // Subject line with merge fields
+	Body      string    `json:"body"`                       // Body content with merge fields
+	IsHTML    bool      `json:"isHTML"`                     // True for HTML format, false for plain text
+	IsBuiltIn bool      `json:"isBuiltIn"`                  // True if this is a built-in template
+	CreatedAt time.Time `json:"createdAt" ts_type:"string"` // When the template was created
+	UpdatedAt time.Time `json:"updatedAt" ts_type:"string"` // When the template was last modified
 }
 
 // AppSettings represents user preferences and application settings.
 // These are persisted to disk and loaded on startup.
-// Phase 2: New model for centralized settings management.
 type AppSettings struct {
 	// Display Settings
 	Theme         string `json:"theme"`         // "light", "dark", or "system"
 	DefaultFormat string `json:"defaultFormat"` // "html" or "plaintext"
 
 	// Sending Settings
-	SendingDelay   int  `json:"sendingDelay"`   // Delay between emails in milliseconds
-	ConfirmSend    bool `json:"confirmSend"`    // Show confirmation before sending
-	SoundEnabled   bool `json:"soundEnabled"`   // Play sound on completion
-	AutoSaveTempls bool `json:"autoSaveTempls"` // Auto-save templates on exit
+	SendingDelay    int    `json:"sendingDelay"`    // Delay between emails in milliseconds
+	ConfirmSend     bool   `json:"confirmSend"`     // Show confirmation before sending
+	SoundEnabled    bool   `json:"soundEnabled"`    // Play sound on completion
+	AutoSaveTempls  bool   `json:"autoSaveTempls"`  // Auto-save templates on exit
+	DuplicatePolicy string `json:"duplicatePolicy"` // keep_first|keep_last|exclude_all|keep_all|manual
+
+	// Schema version for settings migration/merge with defaults.
+	SchemaVersion int `json:"schemaVersion"`
 
 	// Recent Files
 	RecentFiles []string `json:"recentFiles"` // Last 10 opened contact files
 }
 
+// CurrentSettingsSchemaVersion is bumped when the settings shape changes.
+const CurrentSettingsSchemaVersion = 1
+
 // DefaultSettings returns the default application settings.
 func DefaultSettings() *AppSettings {
 	return &AppSettings{
-		Theme:          "light",
-		DefaultFormat:  "html",
-		SendingDelay:   500,
-		ConfirmSend:    true,
-		SoundEnabled:   true,
-		AutoSaveTempls: true,
-		RecentFiles:    []string{},
+		Theme:           "light",
+		DefaultFormat:   "html",
+		SendingDelay:    500,
+		ConfirmSend:     true,
+		SoundEnabled:    true,
+		AutoSaveTempls:  false,
+		DuplicatePolicy: "keep_first",
+		SchemaVersion:   CurrentSettingsSchemaVersion,
+		RecentFiles:     []string{},
 	}
 }

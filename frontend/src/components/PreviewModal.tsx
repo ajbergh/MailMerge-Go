@@ -1,13 +1,9 @@
 /**
  * PreviewModal Component - Email Preview Modal
  * 
- * Phase 1 (v1.2): New component for previewing how an email will look
- * for a specific contact before sending.
- * 
  * Features:
  * - Contact selector dropdown to preview for any contact
- * - Shows rendered subject line with merge fields replaced
- * - Shows rendered body with merge fields replaced
+ * - Shows subject and body rendered by the backend merge pipeline
  * - Displays HTML emails in an iframe for accurate preview
  * - Shows attachments that will be included
  * - Close button and click-outside-to-close functionality
@@ -15,6 +11,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Contact } from '../types';
 import { X, Eye, User, Paperclip, ChevronDown } from 'lucide-react';
+import DOMPurify from 'dompurify';
 
 /**
  * Props for the PreviewModal component
@@ -114,7 +111,9 @@ export function PreviewModal({
     // Clean up ReactQuill's HTML output:
     // 1. Remove empty paragraphs that only contain <br> (ReactQuill adds these for blank lines)
     // 2. Replace consecutive closing/opening p tags with line breaks to avoid double spacing
-    let cleanedHtml = html
+    // Sanitize before display (defense in depth; the iframe is also sandboxed
+    // without allow-scripts).
+    let cleanedHtml = DOMPurify.sanitize(html)
       // Convert <p><br></p> (empty lines from ReactQuill) to just <br> for single line break
       .replace(/<p><br><\/p>/gi, '<br>')
       // Handle <p><br/></p> variant

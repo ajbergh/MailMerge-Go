@@ -1,47 +1,57 @@
+<p align="center">
+  <img src="docs/assets/mailmerge-go-banner.svg" alt="MailMerge Go — personalized Outlook campaigns, safely sent" width="100%">
+</p>
+
 # MailMerge Go
 
-A production-ready Windows desktop application for Outlook-based email mail merge. Built with Go backend (using COM bindings) and React frontend, bundled with Wails.
+A Windows desktop application for Outlook-based email mail merge. Built with a Go
+backend (classic Outlook COM automation) and a React/TypeScript frontend, bundled
+with Wails v2.
 
-![MailMerge Go Screenshot](build/appicon.png)
+> **Status:** actively developed, not yet certified production-ready. Core sending
+> is guarded by a campaign preflight and a typed result model; automated tests
+> cover the campaign engine without Outlook. See [dev_docs/](dev_docs/) for
+> architecture and the [ROADMAP](ROADMAP.md) for what is implemented vs planned.
+>
+> **Outlook support:** classic desktop Outlook only. The **New Outlook** app does
+> **not** expose COM automation and is not supported for sending.
 
 ## Features
 
 ### Contact Management
 - **Contact Import**: Import contacts from CSV or Excel (.xlsx) files
-- **Custom Merge Fields**: Use any column from your file as a merge field (v1.2)
-- **Contact Filtering**: Search and filter contacts by name or email (v1.2)
-- **Contact Selection**: Select specific contacts with checkboxes (v1.2)
-- **Duplicate Detection**: Automatic warning for duplicate email addresses (v1.2)
-- **Recent Files**: Quick access to recently opened contact files (v1.3)
+- **Custom Merge Fields**: Use any imported column as a merge field
+- **Contact Filtering and Selection**: Search contacts and select recipients by stable ID
+- **Duplicate Handling**: Detect duplicate recipient addresses before sending and apply the configured policy
+- **Recent Files**: Quick access to recently opened contact files
 
 ### Email Composition
 - **Rich Text Editor**: Compose emails in plain text or HTML with a WYSIWYG editor
 - **Dynamic Merge Fields**: Merge fields auto-generated from your file columns
-- **Email Preview**: Preview how emails look for specific contacts before sending (v1.2)
-- **Email Templates**: Save and load email templates for reuse (v1.3)
-- **Built-in Templates**: 6 starter templates included (Welcome, Newsletter, Meeting, etc.) (v1.3)
-- **CC/BCC Support**: Add CC and BCC recipients with optional merge field support (v1.4)
+- **Email Preview**: Render a preview through the same backend renderer used for sending
+- **Email Templates**: Save and load reusable templates, including built-in templates
+- **CC/BCC Support**: Add static or personalized CC and BCC recipient lists
 
 ### Attachments
 - **Multiple Attachments**: Add multiple file attachments to your emails
-- **Drag & Drop**: Drag files directly onto the attachment area (v1.2)
-- **Size Tracking**: View individual and total attachment sizes (v1.2)
+- **Drag & Drop**: Drag files directly onto the attachment area
+- **Size Tracking**: View individual and total attachment sizes
 
 ### Sending
 - **Test Emails**: Send test emails before bulk sending
 - **Real-time Progress**: Track sending progress with live updates
-- **Retry Failed**: Retry sending to failed contacts with one click (v1.2)
-- **Rate Limiting**: Configure sending delay (100ms-5000ms) for Outlook stability (v1.3)
+- **Retry Failed**: Retry only recipients whose latest attempt failed
+- **Rate Limiting**: Configure validated inter-message and batch pacing
 - **Export Logs**: Export send results to CSV for record-keeping
 - **Outlook Integration**: Uses Microsoft Outlook COM automation for reliable email delivery
 
 ### UI/UX
 - **Dark/Light Mode**: Toggle between dark and light themes
-- **Settings Panel**: Centralized settings with theme, delay, and notification options (v1.3)
-- **Keyboard Shortcuts**: Power user shortcuts for common actions (v1.3)
+- **Settings Panel**: Centralized settings with theme, delay, and notification options
+- **Keyboard Shortcuts**: Power user shortcuts for common actions
 - **Responsive Design**: Clean, modern interface that works on any screen size
 
-### Keyboard Shortcuts (v1.3)
+### Keyboard Shortcuts
 - `Ctrl+O` - Open contact file
 - `Ctrl+S` - Save current email as template
 - `Ctrl+Enter` - Send test email
@@ -57,9 +67,9 @@ A production-ready Windows desktop application for Outlook-based email mail merg
 - Microsoft Outlook installed and configured with an email account
 
 ### For Developers
-- Go 1.21 or later
-- Node.js 18 or later
-- Wails CLI v2
+- Go 1.24 or later (matches `go.mod`; CI pins 1.24.x)
+- Node.js 20.19+ or 22.12+ (required by Vite 8)
+- Wails CLI v2.11.0
 
 ## Installation
 
@@ -73,29 +83,32 @@ Download the latest release from the [Releases](../../releases) page and run `Ma
 2. Install [Node.js](https://nodejs.org/)
 3. Install Wails CLI:
    ```powershell
-   go install github.com/wailsapp/wails/v2/cmd/wails@latest
+   go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
    ```
 
 4. Clone the repository and build:
    ```powershell
-   cd MailMergeApp
-   .\build.ps1
+   cd MailMerge-Go
+   .\scripts\build-windows.ps1
    ```
 
 5. The executable will be at `build/bin/MailMergeApp.exe`
 
-## Build Script Options
+## Build Scripts
 
-The included PowerShell build script (`build.ps1`) provides several options:
+The supported Windows entry point is `scripts/build-windows.ps1`:
 
 ```powershell
-.\build.ps1                 # Production build
-.\build.ps1 -Clean          # Clean build directory before building
-.\build.ps1 -Dev            # Development build (includes devtools)
-.\build.ps1 -Debug          # Build with debug symbols
-.\build.ps1 -NoPackage      # Skip packaging step
-.\build.ps1 -Help           # Show all options
+.\scripts\build-windows.ps1                       # Production build
+.\scripts\build-windows.ps1 -Clean                # Clean build output first
+.\scripts\build-windows.ps1 -Debug                # Build with debug symbols
+.\scripts\build-windows.ps1 -SkipFrontendInstall  # Reuse installed dependencies
 ```
+
+`scripts/build-linux.sh` and `scripts/build-macos.sh` provide corresponding
+Wails targets. Run them on their native platforms with the Wails system
+dependencies installed. They build the desktop shell only; sending still requires
+classic Outlook on Windows.
 
 ## Development
 
@@ -118,12 +131,13 @@ Optional but recommended columns:
 - `FirstName` - Used for personalization
 - `LastName` - Used for personalization
 
-**Any additional columns** in your file become available as merge fields! For example, if your file has a "Company" column, you can use `{Company}` in your email.
+**Any additional columns** in your file become available as merge fields. For
+example, a `Company` column becomes `{{company}}`.
 
 Column names are case-insensitive. Sample file included in `samples/contacts.csv`.
 
 After import:
-- **Duplicates**: Any duplicate email addresses will be highlighted with a warning icon
+- **Duplicates**: Duplicate recipient groups are surfaced in preflight and resolved by the configured policy before sending
 - **Selection**: All contacts are selected by default. Use checkboxes to select/deselect
 - **Search**: Use the search box to filter contacts by name or email
 
@@ -131,11 +145,18 @@ After import:
 
 Enter your email subject and body. Merge field buttons are automatically generated based on your imported file columns.
 
-**Common Merge Fields**:
-- `{FirstName}` - Recipient's first name
-- `{LastName}` - Recipient's last name
-- `{Email}` - Recipient's email address
-- Plus any custom columns from your file!
+**Merge field syntax** (see [dev_docs/merge-fields.md](dev_docs/merge-fields.md)):
+- Canonical: `{{field_id}}` — e.g. `{{first_name}}`, `{{account_manager}}`
+- With fallback: `{{first_name|there}}` — uses the fallback when the value is blank
+- Legacy single-brace `{FirstName}` is still supported for backward compatibility
+
+Columns with spaces, hyphens, punctuation, or non-ASCII characters are supported
+(e.g. `Account Manager` → `{{account_manager}}`). Unknown fields are reported and
+**block sending** rather than silently rendering as empty. Merge values are
+HTML-escaped in HTML emails.
+
+**Common fields**: `{{first_name}}`, `{{last_name}}`, `{{email}}`, plus any column
+from your file.
 
 Toggle between plain text and rich text (HTML) mode.
 
@@ -164,32 +185,91 @@ After sending completes:
 
 ```
 MailMergeApp/
-├── app.go                 # Main app with Wails bindings
-├── main.go                # Application entry point
+├── app.go                 # Wails bindings (thin controller over the engine)
+├── main.go                # Application entry point + build-time version vars
 ├── backend/
-│   ├── models/
-│   │   └── contact.go     # Data models (Contact, Template, Settings)
-│   └── services/
-│       ├── file_service.go      # CSV/Excel parsing
-│       ├── merge_service.go     # Template merging
-│       ├── outlook_service.go   # Outlook COM automation
-│       ├── template_service.go  # Email template management (v1.3)
-│       └── settings_service.go  # App settings persistence (v1.3)
+│   ├── models/            # Shared data structs (Contact, Settings, Template, ...)
+│   ├── mergefield/        # Canonical merge-field model + renderer + diagnostics
+│   ├── email/             # net/mail validation, address lists, duplicate policy
+│   ├── htmlutil/          # HTML normalization + sanitizer (bluemonday)
+│   ├── campaign/          # EmailSender iface, FakeSender, preflight, runner, results
+│   ├── outlook/           # Classic-Outlook COM sender (dedicated STA worker) + stub
+│   ├── graph/             # Microsoft Graph sender (design-stage stub)
+│   ├── storage/           # Campaign history repository (JSON impl)
+│   └── services/          # File import, templates, settings, suppression persistence
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx        # Main React component
-│   │   ├── components/    # UI components
-│   │   │   ├── TemplateManager.tsx  # Template selection (v1.3)
-│   │   │   ├── SettingsModal.tsx    # Settings panel (v1.3)
-│   │   │   └── ...                  # Other components
-│   │   ├── styles/        # CSS styles
+│   │   ├── components/    # UI components (+ *.test.tsx)
+│   │   ├── styles/        # CSS
 │   │   └── types/         # TypeScript types
 │   └── wailsjs/           # Generated Wails bindings
-├── samples/
-│   └── contacts.csv       # Sample contact file
-└── build/
-    └── bin/               # Built executables
+├── .github/workflows/     # CI + release pipelines
+├── scripts/               # Native-platform Wails build entry points
+├── dev_docs/              # Architecture, merge fields, testing, security, ...
+├── samples/contacts.csv   # Sample contact file
+└── build/bin/             # Built executables
 ```
+
+## Testing
+
+```powershell
+# Go: unit tests for the campaign engine, merge fields, email, services, storage
+go test ./backend/...
+go vet ./backend/...
+
+# Frontend: type check, unit tests, production build
+cd frontend
+npm ci
+npm run test
+npm run build
+```
+
+Outlook COM is isolated behind an `EmailSender` interface, so the campaign engine
+is fully testable without Outlook installed. Windows/Outlook integration tests are
+opt-in behind a build tag:
+
+```powershell
+go test -tags outlookintegration ./backend/outlook/...
+```
+
+See [dev_docs/testing.md](dev_docs/testing.md).
+
+## Continuous Integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to
+`main`: gofmt check, `go vet`, `go test -race`, golangci-lint, frontend
+test/build (plus lint when configured), a Wails Windows build with an uploaded unsigned artifact, and
+dependency scanning (govulncheck + npm audit). Releases are cut only from version
+tags via `release.yml`.
+
+## Data Storage & Privacy
+
+Application data is stored locally under your Windows user profile
+(`%AppData%\MailMergeGo`):
+
+- `settings.json` — application settings
+- `templates/*.json` — saved email templates
+- `suppression.json` — local do-not-send list
+- `campaigns/*.json` — campaign run history
+
+No contact data, credentials, or email content is sent anywhere by this
+application; email is submitted through your local Outlook profile. No tracking
+pixels or unsubscribe links are added to messages. See
+[dev_docs/security.md](dev_docs/security.md).
+
+## Security Notes
+
+- Imported contact values are HTML-escaped before being placed into HTML emails,
+  and authored HTML bodies are sanitized (scripts, event handlers, unsafe URLs,
+  iframes, and embedded objects are removed).
+- Previews are additionally sanitized and rendered in a sandboxed iframe.
+- Template IDs are backend-generated and cannot traverse directories; built-in
+  templates cannot be overwritten.
+- Settings, templates, suppression list, and campaign history are written
+  atomically (temp file + rename).
+- "Submitted" reflects acceptance by Outlook for sending; it does not confirm
+  delivery.
 
 ## Troubleshooting
 
@@ -205,7 +285,7 @@ MailMergeApp/
 This COM threading error has been fixed in the latest version. If you encounter it:
 - Ensure you're running the latest build
 - The application now properly locks OS threads for COM operations
-- A 500ms delay between emails helps maintain COM stability
+- Verify the configured sending delay and any Outlook security prompts before retrying
 
 ### "Failed to create mail item"
 

@@ -7,46 +7,59 @@ struct are automatically bound to the frontend and can be called from JavaScript
 
 The App orchestrates:
   - File operations (selecting and parsing contact files)
-  - Email composition and template merging
-  - Outlook integration for sending emails
-  - Log export functionality
-  - Phase 2: Template management and settings persistence
+  - Preview, preflight, and campaign execution through the shared renderer
+  - Sender capability checks and local Outlook integration
+  - Template, settings, suppression, and campaign-history persistence
+  - Log export and Wails runtime dialogs/events
 
-Thread Safety:
-  - All Outlook operations are internally synchronized
-  - File operations are stateless and thread-safe
+Thread safety: the App serializes access to the active campaign cancellation
+function and last result. The Outlook sender owns its dedicated COM worker.
 */
 package main
 
 import (
+	"MailMergeApp/backend/campaign"
+	"MailMergeApp/backend/email"
 	"MailMergeApp/backend/models"
+	"MailMergeApp/backend/outlook"
 	"MailMergeApp/backend/services"
+	"MailMergeApp/backend/storage"
 	"context"
 	"encoding/csv"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App struct holds the application state and service dependencies.
-// It is the primary struct bound to the frontend, providing all
-// functionality accessible from the UI.
-// Phase 2: Added template and settings services.
+// App holds the Wails-bound application state and service dependencies.
 type App struct {
-	ctx             context.Context           // Wails context for runtime operations
-	fileService     *services.FileService     // Handles CSV/Excel file parsing
-	mergeService    *services.MergeService    // Handles template variable replacement
-	outlookService  *services.OutlookService  // Handles Outlook COM automation
-	templateService *services.TemplateService // Phase 2: Handles email template persistence
-	settingsService *services.SettingsService // Phase 2: Handles app settings persistence
+	ctx             context.Context              // Wails context for runtime operations
+	fileService     *services.FileService        // Handles CSV/Excel file parsing
+	mergeService    *services.MergeService       // Preview/validate merge helper
+	sender          campaign.EmailSender         // Outlook COM (or stub) behind the sender interface
+	runner          *campaign.Runner             // Platform-independent campaign engine
+	templateService *services.TemplateService    // Handles email template persistence
+	settingsService *services.SettingsService    // Handles app settings persistence
+	suppression     *services.SuppressionService // Suppression / unsubscribe list
+	history         storage.CampaignRepository   // Campaign run history (JSON-backed)
+
+	mu         sync.Mutex         // guards cancel and lastResult
+	cancel     context.CancelFunc // cancels the in-flight campaign, if any
+	lastResult *campaign.CampaignResult
+
+	version   string // build-time version metadata
+	commit    string
+	buildDate string
 }
 
-// NewApp creates a new App application struct with initialized services.
-// This is called once during application startup.
-// Phase 2: Added template and settings service initialization.
+// NewApp constructs the application services and wires them into the campaign
+// runner. Persistent-service initialization failures are non-fatal: the related
+// UI operation returns an availability error instead.
 func NewApp() *App {
 	templateService, err := services.NewTemplateService()
 	if err != nil {
@@ -58,21 +71,77 @@ func NewApp() *App {
 		fmt.Printf("Warning: failed to initialize settings service: %v\n", err)
 	}
 
+	suppression, err := services.NewSuppressionService()
+	if err != nil {
+		fmt.Printf("Warning: failed to initialize suppression service: %v\n", err)
+	}
+
+	sender := outlook.New()
+
+	var history storage.CampaignRepository
+	if appData, derr := os.UserConfigDir(); derr == nil {
+		if repo, herr := storage.NewJSONCampaignRepository(filepath.Join(appData, "MailMergeGo", "campaigns")); herr == nil {
+			history = repo
+		} else {
+			fmt.Printf("Warning: failed to initialize campaign history: %v\n", herr)
+		}
+	}
+
 	return &App{
 		fileService:     services.NewFileService(),
 		mergeService:    services.NewMergeService(),
-		outlookService:  services.NewOutlookService(),
+		sender:          sender,
+		runner:          campaign.NewRunner(sender),
 		templateService: templateService,
 		settingsService: settingsService,
+		suppression:     suppression,
+		history:         history,
 	}
+}
+
+// recordRun persists a terminal campaign result to history (best effort).
+func (a *App) recordRun(subject string, isHTML bool, res campaign.CampaignResult) {
+	if a.history == nil {
+		return
+	}
+	rec := storage.CampaignRecord{
+		ID:             uuid.NewString(),
+		StartedAt:      time.Now(),
+		FinishedAt:     time.Now(),
+		Subject:        subject,
+		IsHTML:         isHTML,
+		RecipientCount: res.Attempted + res.Skipped + res.Cancelled,
+		State:          res.State,
+		Result:         res,
+	}
+	if err := a.history.Save(rec); err != nil {
+		fmt.Printf("Warning: failed to record campaign run: %v\n", err)
+	}
+}
+
+// GetCampaignHistory returns past campaign runs, newest first.
+func (a *App) GetCampaignHistory() []storage.CampaignRecord {
+	if a.history == nil {
+		return []storage.CampaignRecord{}
+	}
+	records, err := a.history.List()
+	if err != nil {
+		return []storage.CampaignRecord{}
+	}
+	return records
 }
 
 // startup is called when the app starts. It receives the Wails context
 // which is used for runtime operations like dialogs and events.
-// This method initializes any context-dependent services.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.outlookService.SetContext(ctx)
+}
+
+// shutdown releases the Outlook COM worker cleanly.
+func (a *App) shutdown(ctx context.Context) {
+	if closer, ok := a.sender.(interface{ Close() }); ok {
+		closer.Close()
+	}
 }
 
 // ================== File Operations ==================
@@ -172,27 +241,27 @@ func (a *App) PreviewMerge(subjectTemplate, bodyTemplate, sampleFirstName, sampl
 	return &result
 }
 
-// GetMergeFields returns the list of available merge fields that can be
-// used in email templates. Returns default fields: {FirstName}, {LastName}, {Email}
-// For dynamic fields from imported files, use GetMergeFieldsFromHeaders.
+// GetMergeFields returns the standard canonical merge tokens. For imported
+// columns, use GetMergeFieldsFromHeaders to create the matching canonical tokens.
 func (a *App) GetMergeFields() []string {
 	return a.mergeService.GetAvailableFields()
 }
 
-// GetMergeFieldsFromHeaders converts column headers from an imported file
-// to merge field format. Phase 1: Enables dynamic merge fields from any column.
+// GetMergeFieldsFromHeaders canonicalizes imported column headers and returns the
+// corresponding merge tokens (for example, `Account Manager` becomes
+// `{{account_manager}}`).
 //
 // Parameters:
 //   - headers: Column headers from the imported file
 //
 // Returns:
-//   - []string: Merge fields in {FieldName} format
+//   - []string: Canonical merge tokens in {{field_id}} format
 func (a *App) GetMergeFieldsFromHeaders(headers []string) []string {
 	return a.mergeService.GetMergeFieldsFromHeaders(headers)
 }
 
-// PreviewMergeForContact renders the subject and body templates for a specific contact.
-// Phase 1: Added for the email preview modal feature.
+// PreviewMergeForContact renders subject and body templates for one contact using
+// the same merge service used by the campaign pipeline.
 //
 // Parameters:
 //   - subjectTemplate: Email subject with merge fields
@@ -220,81 +289,255 @@ func (a *App) ValidateTemplate(template string) []string {
 
 // ================== Email Operations ==================
 
-// CheckOutlookInstalled verifies that Microsoft Outlook is installed
-// and accessible via COM automation. Should be called on app startup.
-//
-// Returns:
-//   - error: Non-nil if Outlook is not available
+// CheckOutlookInstalled verifies that a usable sender (classic Outlook via COM)
+// is available. Returns an actionable error when it is not.
 func (a *App) CheckOutlookInstalled() error {
-	return a.outlookService.CheckOutlookInstalled()
+	status := a.sender.Preflight(a.ctx)
+	if !status.Available {
+		return fmt.Errorf("%s", status.Message)
+	}
+	return nil
 }
 
-// SendTestEmail sends a single test email to verify the configuration.
-// Uses sample data to render the template before sending.
-// Phase 3: Now supports CC and BCC recipients.
-//
-// Parameters:
-//   - request: Contains test address, templates, sample data, CC, and BCC
-//
-// Returns:
-//   - error: Non-nil if send failed
+// GetOutlookStatus returns a structured sender-readiness report for the UI.
+func (a *App) GetOutlookStatus() campaign.SenderStatus {
+	return a.sender.Preflight(a.ctx)
+}
+
+// GetSenderCapabilities reports what the active sender supports.
+func (a *App) GetSenderCapabilities() campaign.SenderCapabilities {
+	return a.sender.Capabilities(a.ctx)
+}
+
+// PreflightCampaign validates a campaign and returns structured results. The UI
+// must display these before sending; bulk sending is impossible while CanSend
+// is false.
+func (a *App) PreflightCampaign(request models.EmailRequest) campaign.PreflightResult {
+	c := a.buildCampaign(request, true)
+	return campaign.NewPreflighter().Preflight(a.ctx, c, a.sender)
+}
+
+// SendTestEmail sends a single representative test email through the same
+// preflight and rendering pipeline as a bulk send, using the selected contact's
+// full data. The test recipient does not overwrite the contact's {{email}}
+// value unless OverwriteEmail is set.
 func (a *App) SendTestEmail(request models.TestEmailRequest) error {
-	// Render templates with sample data
-	merged := a.mergeService.PreviewMerge(
-		request.SubjectTemplate,
-		request.BodyTemplate,
-		request.SampleFirstName,
-		request.SampleLastName,
-		request.TestAddress,
-	)
-
-	// Render CC/BCC templates if provided (use static values for test)
-	cc := request.CC
-	if request.CCTemplate != "" {
-		ccMerged := a.mergeService.PreviewMerge("", request.CCTemplate, request.SampleFirstName, request.SampleLastName, request.TestAddress)
-		cc = ccMerged.Body
+	contact := request.Contact
+	if contact.Email == "" {
+		contact = models.Contact{
+			FirstName: firstNonEmpty(request.SampleFirstName, "John"),
+			LastName:  firstNonEmpty(request.SampleLastName, "Doe"),
+			Email:     "sample@example.com",
+		}
 	}
-	bcc := request.BCC
-	if request.BCCTemplate != "" {
-		bccMerged := a.mergeService.PreviewMerge("", request.BCCTemplate, request.SampleFirstName, request.SampleLastName, request.TestAddress)
-		bcc = bccMerged.Body
+	c := campaign.Campaign{
+		Headers:         headersForContacts([]models.Contact{contact}),
+		Contacts:        []models.Contact{contact},
+		SubjectTemplate: request.SubjectTemplate,
+		BodyTemplate:    request.BodyTemplate,
+		IsHTML:          request.IsHTML,
+		Attachments:     request.Attachments,
+		CCTemplate:      firstNonEmpty(request.CCTemplate, request.CC),
+		BCCTemplate:     firstNonEmpty(request.BCCTemplate, request.BCC),
+		ToOverride:      request.TestAddress,
+		OverrideEmail:   request.OverwriteEmail,
+		Options:         campaign.SendOptions{DelayBetweenMessages: 0, ContinueOnError: true},
+		DuplicatePolicy: email.PolicyKeepAll,
 	}
 
-	return a.outlookService.SendTestEmail(
-		request.TestAddress,
-		merged.Subject,
-		merged.Body,
-		request.IsHTML,
-		request.Attachments,
-		cc,
-		bcc,
-	)
+	ctx, cancel := a.beginRun()
+	defer a.endRun(cancel)
+
+	res := a.runner.Run(ctx, c, a.progressSink())
+	switch res.State {
+	case campaign.CampaignCompleted:
+		if res.Submitted == 0 {
+			return fmt.Errorf("test send failed: %s", firstRecipientError(res))
+		}
+		return nil
+	case campaign.CampaignPreflightFailed:
+		return fmt.Errorf("test send blocked by preflight: %s", preflightSummary(res.Preflight))
+	default:
+		return fmt.Errorf("test send %s: %s", res.State, firstNonEmpty(res.FatalError, firstRecipientError(res)))
+	}
 }
 
-// SendBulkEmails sends personalized emails to all contacts in the list.
-// Progress updates are emitted as events for real-time UI feedback.
-// Phase 3: Now supports CC and BCC with optional merge field templates.
-//
-// Each email is rendered with the contact's data replacing merge fields,
-// then sent via Outlook COM automation with a delay between sends.
-//
-// Parameters:
-//   - request: Contains contacts, templates, HTML flag, attachments, CC, and BCC
-//
-// Returns:
-//   - *models.SendResult: Summary with success/failure counts and logs
-func (a *App) SendBulkEmails(request models.EmailRequest) *models.SendResult {
-	return a.outlookService.SendBulkEmails(
-		request.Contacts,
-		request.SubjectTemplate,
-		request.BodyTemplate,
-		request.IsHTML,
-		request.Attachments,
-		request.CC,
-		request.BCC,
-		request.CCTemplate,
-		request.BCCTemplate,
-	)
+// SendBulkEmails runs a full campaign through the engine and returns a typed
+// result. A fatal preflight or Outlook failure is never reported as an empty
+// success.
+func (a *App) SendBulkEmails(request models.EmailRequest) campaign.CampaignResult {
+	c := a.buildCampaign(request, true)
+
+	ctx, cancel := a.beginRun()
+	defer a.endRun(cancel)
+
+	res := a.runner.Run(ctx, c, a.progressSink())
+
+	a.mu.Lock()
+	a.lastResult = &res
+	a.mu.Unlock()
+	a.recordRun(request.SubjectTemplate, request.IsHTML, res)
+	return res
+}
+
+// RetryFailed retries only the recipients whose latest attempt failed in the
+// last campaign, appending new attempts without double-counting successes.
+func (a *App) RetryFailed(request models.EmailRequest) campaign.CampaignResult {
+	a.mu.Lock()
+	prev := a.lastResult
+	a.mu.Unlock()
+	if prev == nil {
+		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: "no previous campaign to retry"}
+	}
+
+	c := a.buildCampaign(request, true)
+	ctx, cancel := a.beginRun()
+	defer a.endRun(cancel)
+
+	res := a.runner.Retry(ctx, c, *prev, nil, a.progressSink())
+
+	a.mu.Lock()
+	a.lastResult = &res
+	a.mu.Unlock()
+	return res
+}
+
+// CancelCampaign cancels the in-flight campaign, if any. Unattempted recipients
+// are marked cancelled; completed recipient results are preserved.
+func (a *App) CancelCampaign() {
+	a.mu.Lock()
+	cancel := a.cancel
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// beginRun creates a cancelable context for a campaign and stores its cancel func.
+func (a *App) beginRun() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(a.ctx)
+	a.mu.Lock()
+	a.cancel = cancel
+	a.mu.Unlock()
+	return ctx, cancel
+}
+
+func (a *App) endRun(cancel context.CancelFunc) {
+	cancel()
+	a.mu.Lock()
+	a.cancel = nil
+	a.mu.Unlock()
+}
+
+// buildCampaign maps a frontend EmailRequest into a campaign, sourcing send
+// options from validated settings and the suppression list from its service.
+func (a *App) buildCampaign(request models.EmailRequest, applySuppression bool) campaign.Campaign {
+	var suppressed map[string]bool
+	if applySuppression && a.suppression != nil {
+		suppressed = a.suppression.Set()
+	}
+	return campaign.Campaign{
+		Headers:         headersForContacts(request.Contacts),
+		Contacts:        request.Contacts,
+		SubjectTemplate: request.SubjectTemplate,
+		BodyTemplate:    request.BodyTemplate,
+		IsHTML:          request.IsHTML,
+		Attachments:     request.Attachments,
+		CCTemplate:      firstNonEmpty(request.CCTemplate, request.CC),
+		BCCTemplate:     firstNonEmpty(request.BCCTemplate, request.BCC),
+		Options:         a.sendOptions(),
+		DuplicatePolicy: a.duplicatePolicy(),
+		Suppressed:      suppressed,
+	}
+}
+
+// sendOptions reads pacing/behavior from validated application settings.
+func (a *App) sendOptions() campaign.SendOptions {
+	opts := campaign.DefaultSendOptions()
+	if a.settingsService != nil {
+		s := a.settingsService.GetSettings()
+		opts.DelayBetweenMessages = time.Duration(s.SendingDelay) * time.Millisecond
+		opts.ConfirmBeforeSend = s.ConfirmSend
+	}
+	return opts.Normalized()
+}
+
+func (a *App) duplicatePolicy() email.Policy {
+	if a.settingsService != nil {
+		if p := email.Policy(a.settingsService.GetSettings().DuplicatePolicy); p.Valid() {
+			return p
+		}
+	}
+	return email.DefaultPolicy
+}
+
+// progressSink forwards campaign progress to the frontend's "email:progress"
+// event channel (unchanged payload shape).
+func (a *App) progressSink() campaign.ProgressSink {
+	return campaign.ProgressFunc(func(p campaign.Progress) {
+		if a.ctx == nil {
+			return
+		}
+		runtime.EventsEmit(a.ctx, "email:progress", models.ProgressUpdate{
+			Current:   p.Current,
+			Total:     p.Total,
+			Status:    p.Status,
+			Email:     p.Email,
+			Message:   p.Message,
+			Timestamp: time.Now().Format(time.RFC3339),
+		})
+	})
+}
+
+// ---- campaign helpers ----
+
+// headersForContacts derives the union of column headers from the contacts'
+// custom fields (every contact carries all imported columns), giving the merge
+// schema the full field set for unknown-field detection.
+func headersForContacts(contacts []models.Contact) []string {
+	seen := map[string]bool{}
+	var headers []string
+	for _, c := range contacts {
+		for k := range c.CustomFields {
+			if !seen[k] {
+				seen[k] = true
+				headers = append(headers, k)
+			}
+		}
+	}
+	return headers
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func firstRecipientError(res campaign.CampaignResult) string {
+	for _, r := range res.RecipientResults {
+		if len(r.Attempts) > 0 {
+			last := r.Attempts[len(r.Attempts)-1]
+			if last.Error != "" {
+				return last.Error
+			}
+		}
+	}
+	return "unknown error"
+}
+
+func preflightSummary(pf *campaign.PreflightResult) string {
+	if pf == nil || len(pf.Errors) == 0 {
+		return "validation failed"
+	}
+	msg := pf.Errors[0].Message
+	if len(pf.Errors) > 1 {
+		msg = fmt.Sprintf("%s (and %d more)", msg, len(pf.Errors)-1)
+	}
+	return msg
 }
 
 // ================== Export Operations ==================
@@ -368,17 +611,26 @@ func (a *App) ExportLogsToCSV(logs []models.EmailLog) (string, error) {
 
 // ================== Utility Methods ==================
 
-// GetAppInfo returns application metadata for display in the UI.
-// Useful for about dialogs or version checking.
+// SetVersionInfo records build-time version metadata (called from main).
+func (a *App) SetVersionInfo(version, commit, buildDate string) {
+	a.version = version
+	a.commit = commit
+	a.buildDate = buildDate
+}
+
+// GetAppInfo returns application metadata for display in the UI, derived from a
+// single build-time source rather than hard-coded values.
 func (a *App) GetAppInfo() map[string]string {
 	return map[string]string{
-		"name":    "MailMerge Go",
-		"version": "1.3.0",
-		"author":  "Your Name",
+		"name":      "MailMerge Go",
+		"version":   firstNonEmpty(a.version, "dev"),
+		"commit":    firstNonEmpty(a.commit, "unknown"),
+		"buildDate": firstNonEmpty(a.buildDate, "unknown"),
+		"author":    "ajbergh",
 	}
 }
 
-// ================== Phase 2: Template Operations ==================
+// ================== Template Operations ==================
 
 // GetAllTemplates returns all saved email templates.
 // Templates are sorted with built-in templates first, then user templates alphabetically.
@@ -437,7 +689,7 @@ func (a *App) DeleteTemplate(id string) error {
 	return a.templateService.DeleteTemplate(id)
 }
 
-// ================== Phase 2: Settings Operations ==================
+// ================== Settings Operations ==================
 
 // GetSettings returns the current application settings.
 //

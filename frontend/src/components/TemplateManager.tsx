@@ -1,8 +1,6 @@
 /**
  * TemplateManager Component - Email Template Management
  * 
- * Phase 2 (v1.3): New component for managing saved email templates.
- * 
  * Features:
  * - Template selector dropdown in the email editor
  * - Load template to populate subject and body

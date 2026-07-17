@@ -113,11 +113,12 @@ function Clean-Build {
 
 function Install-Dependencies {
     Write-Info "Installing frontend dependencies..."
-    
+
     Push-Location (Join-Path $ScriptDir "frontend")
     try {
-        npm install 2>&1 | Out-Null
-        Write-Success "  Dependencies installed"
+        # Use `npm ci` for reproducible installs from package-lock.json.
+        npm ci 2>&1 | Out-Null
+        Write-Success "  Dependencies installed (npm ci)"
     }
     catch {
         Write-Error "  Failed to install dependencies: $_"
@@ -157,7 +158,16 @@ function Build-Application {
         # Platform
         $buildArgs += "-platform"
         $buildArgs += "windows/amd64"
-        
+
+        # Inject build-time version info from a single source (git).
+        $gitVersion = (git describe --tags --always 2>$null)
+        if (-not $gitVersion) { $gitVersion = "dev" }
+        $gitCommit = (git rev-parse --short HEAD 2>$null)
+        if (-not $gitCommit) { $gitCommit = "unknown" }
+        $buildDate = (Get-Date -Format "yyyy-MM-dd")
+        $buildArgs += "-ldflags"
+        $buildArgs += "-X main.Version=$gitVersion -X main.Commit=$gitCommit -X main.BuildDate=$buildDate"
+
         Write-Host ""
         Write-Host "  Running: wails build $($buildArgs -join ' ')" -ForegroundColor Cyan
         Write-Host ""

@@ -1,8 +1,6 @@
 /**
  * SettingsModal Component - Application Settings Panel
  * 
- * Phase 2 (v1.3): New component for centralized settings management.
- * 
  * Features:
  * - Theme preference (Light/Dark/System)
  * - Default email format (HTML/Plain Text)

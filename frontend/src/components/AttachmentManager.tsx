@@ -4,12 +4,6 @@
  * This component provides the UI for managing email attachments.
  * Users can add multiple files and remove individual attachments.
  * 
- * Phase 1 Updates (v1.2):
- * - Added drag-and-drop file support
- * - Visual feedback during drag over
- * - Displays file sizes when available
- * - Warns about total attachment size (20MB limit)
- * 
  * Features:
  * - Add multiple attachments via native file dialog
  * - Drag-and-drop files directly onto the attachment area
@@ -42,7 +36,7 @@ interface AttachmentManagerProps {
   onAddAttachments: () => void;
   /** Callback to remove an attachment by index */
   onRemoveAttachment: (index: number) => void;
-  /** Optional callback to handle dropped files (Phase 1) */
+  /** Optional callback that adds files dropped on the attachment area */
   onFilesDropped?: (files: FileList) => void;
   /** Optional file info with sizes */
   attachmentInfo?: FileInfo[];

@@ -1,33 +1,28 @@
 /*
 File Service - Contact File Import
 
-This service handles importing contact lists from CSV and Excel files.
-It provides a unified interface for parsing both file formats and
-extracting contact information.
+This service imports contact lists from CSV and Excel files into the shared
+Contact model. It validates structure, protects import resource usage, and keeps
+all source columns available to the merge-field schema.
 
 Supported Formats:
   - CSV (.csv) - Comma-separated values with header row
-  - Excel (.xlsx) - Microsoft Excel 2007+ format (first sheet only)
-
-Phase 1 Updates (v1.2):
-  - Parses ALL columns from the file, not just FirstName/LastName/Email
-  - Returns all column headers for dynamic merge field generation
-  - Detects and reports duplicate email addresses
-  - Stores custom fields in Contact.CustomFields map
+  - Excel (.xlsx) - Microsoft Excel 2007+ format (first worksheet)
 
 Column Detection:
   - Case-insensitive column name matching
   - Supports variations: "FirstName", "First Name", "first_name"
   - Email column is required; all other columns are optional
 
-Error Handling:
-  - Returns parse errors for invalid rows without failing entire import
-  - Reports duplicate emails as warnings (still includes contacts)
-  - Validates email format with basic @ and . check
+Error handling:
+  - Returns row-level errors and warnings without discarding valid contacts
+  - Reports duplicate email groups for preflight policy resolution
+  - Validates addresses with the shared net/mail-based email package
 */
 package services
 
 import (
+	"MailMergeApp/backend/email"
 	"MailMergeApp/backend/models"
 	"encoding/csv"
 	"fmt"
@@ -36,7 +31,16 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/xuri/excelize/v2"
+)
+
+// Import safeguards (M4.20): bound resource usage so a malformed or hostile file
+// cannot exhaust memory.
+const (
+	MaxImportFileBytes = 50 * 1024 * 1024 // 50 MB
+	MaxImportRows      = 100000
+	MaxImportColumns   = 512
 )
 
 // FileService handles importing contacts from CSV and Excel files.
@@ -48,9 +52,13 @@ func NewFileService() *FileService {
 	return &FileService{}
 }
 
-// ParseContactFile parses a contact file and extracts contact information.
-// Automatically detects file format based on extension.
-// Phase 1: Now returns all column headers and detects duplicates.
+// stripBOM removes a leading UTF-8 byte-order mark from a header cell.
+func stripBOM(s string) string {
+	return strings.TrimPrefix(s, "\xef\xbb\xbf")
+}
+
+// ParseContactFile parses a CSV or XLSX contact file, returns normalized headers
+// and row diagnostics, and records duplicate recipient groups for preflight.
 //
 // Parameters:
 //   - filePath: Absolute path to the CSV or Excel file
@@ -83,9 +91,8 @@ func (fs *FileService) ParseContactFile(filePath string) (*models.ParseResult, e
 	return result, nil
 }
 
-// parseCSV parses a CSV file and extracts contacts.
-// Expects a header row with column names.
-// Phase 1: Now extracts all columns as custom fields.
+// parseCSV parses a CSV file with a required header row and retains every column
+// as a contact field.
 func (fs *FileService) parseCSV(filePath string) (*models.ParseResult, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -101,11 +108,15 @@ func (fs *FileService) parseCSV(filePath string) (*models.ParseResult, error) {
 		return nil, fmt.Errorf("failed to read CSV header: %w", err)
 	}
 
-	// Normalize and store all headers
-	normalizedHeaders := make([]string, len(header))
-	for i, h := range header {
-		normalizedHeaders[i] = strings.TrimSpace(h)
+	// Strip a UTF-8 BOM from the first header cell if present.
+	if len(header) > 0 {
+		header[0] = stripBOM(header[0])
 	}
+	if len(header) > MaxImportColumns {
+		return nil, fmt.Errorf("too many columns (%d); limit is %d", len(header), MaxImportColumns)
+	}
+
+	normalizedHeaders, headerWarnings := normalizeHeaders(header)
 
 	// Find column indices (case-insensitive)
 	colIndices := fs.findColumnIndices(header)
@@ -116,7 +127,7 @@ func (fs *FileService) parseCSV(filePath string) (*models.ParseResult, error) {
 	result := &models.ParseResult{
 		Contacts: []models.Contact{},
 		Errors:   []string{},
-		Warnings: []string{},
+		Warnings: append([]string{}, headerWarnings...),
 		Headers:  normalizedHeaders,
 	}
 
@@ -128,6 +139,14 @@ func (fs *FileService) parseCSV(filePath string) (*models.ParseResult, error) {
 		}
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("row %d: failed to read row: %v", rowNum+1, err))
+			rowNum++
+			continue
+		}
+		if len(result.Contacts) >= MaxImportRows {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("import truncated at %d rows", MaxImportRows))
+			break
+		}
+		if isBlankRow(row) {
 			rowNum++
 			continue
 		}
@@ -145,9 +164,38 @@ func (fs *FileService) parseCSV(filePath string) (*models.ParseResult, error) {
 	return result, nil
 }
 
-// parseExcel parses an Excel file (.xlsx) and extracts contacts.
-// Only reads from the first sheet in the workbook.
-// Phase 1: Now extracts all columns as custom fields.
+// normalizeHeaders trims headers and reports duplicate (case-insensitive) column
+// names as warnings.
+func normalizeHeaders(raw []string) (headers []string, warnings []string) {
+	headers = make([]string, len(raw))
+	seen := map[string]bool{}
+	for i, h := range raw {
+		h = strings.TrimSpace(h)
+		headers[i] = h
+		if h == "" {
+			continue
+		}
+		key := strings.ToLower(h)
+		if seen[key] {
+			warnings = append(warnings, fmt.Sprintf("duplicate column header: %q", h))
+		}
+		seen[key] = true
+	}
+	return headers, warnings
+}
+
+// isBlankRow reports whether every cell in a row is empty/whitespace.
+func isBlankRow(row []string) bool {
+	for _, c := range row {
+		if strings.TrimSpace(c) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// parseExcel parses the first worksheet in an XLSX file and retains every column
+// as a contact field.
 func (fs *FileService) parseExcel(filePath string) (*models.ParseResult, error) {
 	f, err := excelize.OpenFile(filePath)
 	if err != nil {
@@ -170,11 +218,11 @@ func (fs *FileService) parseExcel(filePath string) (*models.ParseResult, error) 
 		return nil, fmt.Errorf("Excel sheet is empty")
 	}
 
-	// Normalize and store all headers
-	normalizedHeaders := make([]string, len(rows[0]))
-	for i, h := range rows[0] {
-		normalizedHeaders[i] = strings.TrimSpace(h)
+	if len(rows[0]) > MaxImportColumns {
+		return nil, fmt.Errorf("too many columns (%d); limit is %d", len(rows[0]), MaxImportColumns)
 	}
+
+	normalizedHeaders, headerWarnings := normalizeHeaders(rows[0])
 
 	// Find column indices (case-insensitive)
 	colIndices := fs.findColumnIndices(rows[0])
@@ -185,12 +233,19 @@ func (fs *FileService) parseExcel(filePath string) (*models.ParseResult, error) 
 	result := &models.ParseResult{
 		Contacts: []models.Contact{},
 		Errors:   []string{},
-		Warnings: []string{},
+		Warnings: append([]string{}, headerWarnings...),
 		Headers:  normalizedHeaders,
 	}
 
 	// Skip header row
 	for i := 1; i < len(rows); i++ {
+		if len(result.Contacts) >= MaxImportRows {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("import truncated at %d rows", MaxImportRows))
+			break
+		}
+		if isBlankRow(rows[i]) {
+			continue
+		}
 		contact, err := fs.extractContact(rows[i], colIndices, normalizedHeaders, i+1)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
@@ -220,14 +275,15 @@ func (fs *FileService) findColumnIndices(header []string) map[string]int {
 
 	for i, col := range header {
 		normalized := strings.ToLower(strings.TrimSpace(col))
-		normalized = strings.ReplaceAll(normalized, " ", "")
-		normalized = strings.ReplaceAll(normalized, "_", "")
+		for _, sep := range []string{" ", "_", "-", "."} {
+			normalized = strings.ReplaceAll(normalized, sep, "")
+		}
 
 		// Handle various column name formats
 		switch {
-		case normalized == "firstname" || normalized == "fname":
+		case normalized == "firstname" || normalized == "fname" || normalized == "givenname":
 			indices["firstname"] = i
-		case normalized == "lastname" || normalized == "lname":
+		case normalized == "lastname" || normalized == "lname" || normalized == "surname":
 			indices["lastname"] = i
 		case normalized == "email" || normalized == "emailaddress" || normalized == "mail":
 			indices["email"] = i
@@ -237,9 +293,8 @@ func (fs *FileService) findColumnIndices(header []string) map[string]int {
 	return indices
 }
 
-// extractContact creates a Contact from a data row using the provided column indices.
-// Phase 1: Now populates CustomFields with all columns beyond FirstName/LastName/Email.
-// Validates that email is present and has a valid format.
+// extractContact creates a Contact from one imported row, including all mapped
+// source columns in CustomFields, and validates the required email address.
 //
 // Parameters:
 //   - row: Array of cell values from the current row
@@ -252,6 +307,7 @@ func (fs *FileService) findColumnIndices(header []string) map[string]int {
 //   - error: Validation error if email is missing or invalid
 func (fs *FileService) extractContact(row []string, colIndices map[string]int, headers []string, rowNum int) (models.Contact, error) {
 	contact := models.Contact{
+		ID:           uuid.NewString(),
 		CustomFields: make(map[string]string),
 	}
 
@@ -279,13 +335,12 @@ func (fs *FileService) extractContact(row []string, colIndices map[string]int, h
 		contact.CustomFields[normalizedKey] = value
 	}
 
-	// Validate email
+	// Validate email using net/mail (see backend/email) instead of a bare
+	// "@"/"." substring check.
 	if contact.Email == "" {
 		return contact, fmt.Errorf("row %d: missing email address", rowNum)
 	}
-
-	// Basic email validation
-	if !strings.Contains(contact.Email, "@") || !strings.Contains(contact.Email, ".") {
+	if !email.IsValid(contact.Email) {
 		return contact, fmt.Errorf("row %d: invalid email format: %s", rowNum, contact.Email)
 	}
 
@@ -338,6 +393,9 @@ func (fs *FileService) ValidateFile(filePath string) error {
 	}
 	if info.IsDir() {
 		return fmt.Errorf("path is a directory, not a file: %s", filePath)
+	}
+	if info.Size() > MaxImportFileBytes {
+		return fmt.Errorf("file is too large (%d bytes); limit is %d bytes", info.Size(), MaxImportFileBytes)
 	}
 
 	ext := strings.ToLower(filepath.Ext(filePath))

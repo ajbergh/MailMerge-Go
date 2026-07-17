@@ -6,6 +6,10 @@ export function AddRecentFile(arg1) {
   return window['go']['main']['App']['AddRecentFile'](arg1);
 }
 
+export function CancelCampaign() {
+  return window['go']['main']['App']['CancelCampaign']();
+}
+
 export function CheckOutlookInstalled() {
   return window['go']['main']['App']['CheckOutlookInstalled']();
 }
@@ -30,6 +34,10 @@ export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
 }
 
+export function GetCampaignHistory() {
+  return window['go']['main']['App']['GetCampaignHistory']();
+}
+
 export function GetFileInfo(arg1) {
   return window['go']['main']['App']['GetFileInfo'](arg1);
 }
@@ -42,8 +50,16 @@ export function GetMergeFieldsFromHeaders(arg1) {
   return window['go']['main']['App']['GetMergeFieldsFromHeaders'](arg1);
 }
 
+export function GetOutlookStatus() {
+  return window['go']['main']['App']['GetOutlookStatus']();
+}
+
 export function GetRecentFiles() {
   return window['go']['main']['App']['GetRecentFiles']();
+}
+
+export function GetSenderCapabilities() {
+  return window['go']['main']['App']['GetSenderCapabilities']();
 }
 
 export function GetSendingDelay() {
@@ -62,12 +78,20 @@ export function ParseContactFile(arg1) {
   return window['go']['main']['App']['ParseContactFile'](arg1);
 }
 
+export function PreflightCampaign(arg1) {
+  return window['go']['main']['App']['PreflightCampaign'](arg1);
+}
+
 export function PreviewMerge(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['PreviewMerge'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function PreviewMergeForContact(arg1, arg2, arg3) {
   return window['go']['main']['App']['PreviewMergeForContact'](arg1, arg2, arg3);
+}
+
+export function RetryFailed(arg1) {
+  return window['go']['main']['App']['RetryFailed'](arg1);
 }
 
 export function SaveTemplate(arg1) {
@@ -92,6 +116,10 @@ export function SendTestEmail(arg1) {
 
 export function SetSendingDelay(arg1) {
   return window['go']['main']['App']['SetSendingDelay'](arg1);
+}
+
+export function SetVersionInfo(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SetVersionInfo'](arg1, arg2, arg3);
 }
 
 export function UpdateSettings(arg1) {

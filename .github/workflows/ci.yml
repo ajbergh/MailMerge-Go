@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Pin tool versions in one place for reproducibility.
+env:
+  GO_VERSION: "1.24.x"
+  NODE_VERSION: "20"
+  WAILS_VERSION: "v2.11.0"
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Go (test, vet, lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./backend/...
+      - name: go test (race)
+        run: go test -race ./backend/...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61.0
+          args: ./backend/...
+
+  frontend:
+    name: Frontend (lint, test, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm run test --if-present
+      - run: npm run build
+
+  windows-build:
+    name: Wails Windows build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+      - name: Frontend deps
+        working-directory: frontend
+        run: npm ci
+      - name: Build (unsigned)
+        run: wails build -platform windows/amd64 -skipbindings -ldflags "-X main.Version=ci-${{ github.sha }} -X main.Commit=${{ github.sha }}"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MailMergeApp-windows-unsigned
+          path: build/bin/*.exe
+          if-no-files-found: error
+
+  security:
+    name: Dependency scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./backend/... || true
+      - name: npm audit
+        working-directory: frontend
+        run: |
+          npm ci
+          npm audit --omit=dev || true

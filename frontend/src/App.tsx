@@ -7,7 +7,7 @@
  * 1. Import Contacts - Load contacts from CSV/Excel files
  * 2. Compose Email - Write subject and body with merge fields
  * 3. Manage Attachments - Add files to attach to all emails
- * 4. Send Emails - Test single emails or send to all contacts
+ * 4. Send Emails - Test a representative contact or send to selected contacts
  * 5. View Results - See success/failure summary and export logs
  * 
  * State Management:
@@ -23,11 +23,8 @@
  * - ProgressTracker: Real-time send progress display
  * - ResultsSummary: Final results and log export
  * 
- * Phase 2 Additions (v1.3):
- * - TemplateManager: Save/load email templates
- * - SettingsModal: Application settings panel
- * - Keyboard shortcuts for quick actions
- * - Theme management synced with settings
+ * It also coordinates persisted templates and settings, preflight feedback,
+ * cancellation/retry, keyboard shortcuts, and theme state.
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Mail, AlertCircle, Send, FlaskConical, CheckCircle2, Sun, Moon, Eye, RefreshCw, Settings } from 'lucide-react';
@@ -46,37 +43,42 @@ import { ProgressUpdate, ParseResult, EmailTemplate, AppSettings } from './types
 import './styles/app.css';
 
 // Import Wails bindings and models
-import { 
-  SelectContactFile, 
-  ParseContactFile, 
+import {
+  SelectContactFile,
+  ParseContactFile,
   SelectAttachments,
-  CheckOutlookInstalled,
+  GetFileInfo,
+  GetOutlookStatus,
   SendTestEmail,
   SendBulkEmails,
+  PreflightCampaign,
+  RetryFailed,
+  CancelCampaign,
   GetMergeFields,
   GetMergeFieldsFromHeaders,
   PreviewMergeForContact,
   ExportLogsToCSV,
-  // Phase 2: Template bindings
+  // Template bindings
   GetAllTemplates,
   SaveTemplate,
   DeleteTemplate,
-  // Phase 2: Settings bindings
+  // Settings bindings
   GetSettings,
   UpdateSettings,
   GetRecentFiles,
   AddRecentFile,
   ClearRecentFiles
 } from '../wailsjs/go/main/App';
-import { models } from '../wailsjs/go/models';
+import { models, campaign } from '../wailsjs/go/models';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
 
 // Type aliases for cleaner code
 type Contact = models.Contact;
-type SendResult = models.SendResult;
-type EmailLog = models.EmailLog;
+type CampaignResult = campaign.CampaignResult;
+type PreflightResult = campaign.PreflightResult;
+type FileInfo = models.FileInfo;
 
-// Use Wails-generated types for Phase 2 features (avoid type mismatches)
+// Use Wails-generated types at the API boundary to avoid type drift.
 type WailsEmailTemplate = models.EmailTemplate;
 type WailsAppSettings = models.AppSettings;
 
@@ -96,12 +98,12 @@ function App() {
   const [parseWarnings, setParseWarnings] = useState<string[]>([]);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   
-  // Phase 1: Selection and filtering state
-  const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
+  // Selection is keyed by stable contact ID (survives filtering/sorting).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [headers, setHeaders] = useState<string[]>([]);
   const [duplicates, setDuplicates] = useState<string[]>([]);
   
-  // Phase 1: Preview modal state
+  // Preview modal state
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
   // Email composition state
@@ -110,18 +112,22 @@ function App() {
   const [isHTML, setIsHTML] = useState(true);
   const [mergeFields, setMergeFields] = useState<string[]>(['{FirstName}', '{LastName}', '{Email}']);
   
-  // Phase 3: CC/BCC state
+  // CC/BCC state
   const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
 
   // Attachments state
   const [attachments, setAttachments] = useState<string[]>([]);
+  const [attachmentInfo, setAttachmentInfo] = useState<FileInfo[]>([]);
 
   // Sending state
   const [isSending, setIsSending] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [progress, setProgress] = useState<ProgressUpdate | null>(null);
   const [progressLogs, setProgressLogs] = useState<Array<{ email: string; status: string; message?: string; timestamp: string }>>([]);
-  const [sendResult, setSendResult] = useState<SendResult | null>(null);
+  const [sendResult, setSendResult] = useState<CampaignResult | null>(null);
+  const [preflight, setPreflight] = useState<PreflightResult | null>(null);
+  const [lastRequest, setLastRequest] = useState<models.EmailRequest | null>(null);
 
   // Error/status state
   const [error, setError] = useState<string | null>(null);
@@ -134,11 +140,11 @@ function App() {
     return (saved === 'dark') ? 'dark' : 'light';
   });
 
-  // Phase 2: Templates state
+  // Templates state
   const [templates, setTemplates] = useState<WailsEmailTemplate[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
 
-  // Phase 2: Settings state
+  // Settings state
   const [settings, setSettings] = useState<WailsAppSettings>(new models.AppSettings({
     theme: 'system',
     defaultFormat: 'html',
@@ -154,9 +160,8 @@ function App() {
   // ==================== Initialization Effects ====================
 
   /**
-   * Apply theme to document on mount and when theme changes
-   * Persists theme preference to localStorage
-   * Phase 2: Now syncs with settings service
+   * Applies the selected theme to the document and keeps the local UI preference
+   * available before persisted settings finish loading.
    */
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -164,8 +169,7 @@ function App() {
   }, [theme]);
 
   /**
-   * Toggle between light and dark themes
-   * Phase 2: Also updates settings
+   * Toggles the local theme and persists the resulting setting.
    */
   const toggleTheme = useCallback(() => {
     setTheme(prev => {
@@ -178,7 +182,7 @@ function App() {
   }, [settings]);
 
   /**
-   * Phase 2: Load templates from backend
+   * Loads saved and built-in templates from the backend.
    */
   const loadTemplates = useCallback(async () => {
     try {
@@ -193,7 +197,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Load settings from backend
+   * Loads persisted settings from the backend.
    */
   const loadSettings = useCallback(async () => {
     try {
@@ -217,7 +221,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Load recent files
+   * Loads the persisted recent-contact-file list.
    */
   const loadRecentFiles = useCallback(async () => {
     try {
@@ -231,13 +235,18 @@ function App() {
   /**
    * Check Outlook availability on mount
    * Also loads the list of available merge fields
-   * Phase 2: Also loads templates and settings
+   * Also loads templates and settings needed by the initial UI.
    */
   useEffect(() => {
     const checkOutlook = async () => {
       try {
-        await CheckOutlookInstalled();
-        setOutlookStatus('ok');
+        const status = await GetOutlookStatus();
+        if (status.available) {
+          setOutlookStatus('ok');
+        } else {
+          setOutlookStatus('error');
+          setError(status.message || 'Outlook is not available');
+        }
       } catch (err: any) {
         setOutlookStatus('error');
         setError(`Outlook is not available: ${err.message || err}`);
@@ -248,7 +257,7 @@ function App() {
     // Get merge fields from backend
     GetMergeFields().then(setMergeFields).catch(console.error);
 
-    // Phase 2: Load templates and settings
+    // Load templates and settings after startup.
     loadTemplates();
     loadSettings();
     loadRecentFiles();
@@ -283,8 +292,8 @@ function App() {
   /**
    * Handle file selection and parsing
    * Opens native file dialog and parses selected CSV/Excel file
-   * Phase 1: Now extracts headers, duplicates, and generates dynamic merge fields
-   * Phase 2: Now adds to recent files list
+   * Parses the selected file, derives canonical merge tokens, and records it in
+   * the recent-file list.
    */
   const handleSelectFile = useCallback(async () => {
     try {
@@ -305,7 +314,7 @@ function App() {
       setHeaders(result.headers || []);
       setDuplicates(result.duplicates || []);
       
-      // Phase 2: Add to recent files
+      // Persist the successfully imported file in the recent-file list.
       try {
         await AddRecentFile(filePath);
         loadRecentFiles();
@@ -313,14 +322,14 @@ function App() {
         console.error('Failed to add to recent files:', err);
       }
       
-      // Phase 1: Select all contacts by default
+      // Select every imported contact by default using stable IDs.
       if (result.contacts && result.contacts.length > 0) {
-        setSelectedIndices(new Set(result.contacts.map((_, i) => i)));
+        setSelectedIds(new Set(result.contacts.map((c) => c.id)));
       } else {
-        setSelectedIndices(new Set());
+        setSelectedIds(new Set());
       }
       
-      // Phase 1: Generate merge fields from headers
+      // Generate canonical merge tokens from the imported headers.
       if (result.headers && result.headers.length > 0) {
         try {
           const fields = await GetMergeFieldsFromHeaders(result.headers);
@@ -348,7 +357,7 @@ function App() {
       setFileName(null);
       setHeaders([]);
       setDuplicates([]);
-      setSelectedIndices(new Set());
+      setSelectedIds(new Set());
     } finally {
       setIsLoadingFile(false);
     }
@@ -376,10 +385,64 @@ function App() {
   }, []);
 
   /**
+   * Handle native file drop onto the attachment area. Wails exposes real file
+   * paths via the drop event's file objects (path property); fall back to the
+   * dialog when paths are unavailable.
+   */
+  const handleFilesDropped = useCallback((files: FileList) => {
+    const paths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const p = (files[i] as any).path as string | undefined;
+      if (p) paths.push(p);
+    }
+    if (paths.length > 0) {
+      setAttachments(prev => [...prev, ...paths]);
+    }
+  }, []);
+
+  /**
+   * Fetch backend file metadata (name/size) whenever the attachment list
+   * changes, so sizes and the total-size warning work reliably.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const infos = await Promise.all(
+        attachments.map(async (path) => {
+          try {
+            return await GetFileInfo(path);
+          } catch {
+            return new models.FileInfo({ name: path.split(/[/\\]/).pop() || path, path, size: 0 });
+          }
+        })
+      );
+      if (!cancelled) setAttachmentInfo(infos);
+    })();
+    return () => { cancelled = true; };
+  }, [attachments]);
+
+  /**
    * Send a test email to a specified address
    * Uses first contact's data for merge preview, or defaults
-   * Phase 3: Now includes CC/BCC in test emails
+   * Sends a test message through the same campaign pipeline, including CC/BCC.
    */
+  // Split CC/BCC into static vs template fields based on merge-field presence.
+  const splitCcBcc = useCallback(() => {
+    const ccHasMerge = cc.includes('{');
+    const bccHasMerge = bcc.includes('{');
+    return {
+      cc: ccHasMerge ? '' : cc,
+      bcc: bccHasMerge ? '' : bcc,
+      ccTemplate: ccHasMerge ? cc : '',
+      bccTemplate: bccHasMerge ? bcc : '',
+    };
+  }, [cc, bcc]);
+
+  const selectedContacts = useMemo(
+    () => contacts.filter((c) => selectedIds.has(c.id)),
+    [contacts, selectedIds]
+  );
+
   const handleSendTestEmail = useCallback(async () => {
     const testAddress = prompt('Enter test email address:');
     if (!testAddress) return;
@@ -387,28 +450,25 @@ function App() {
     try {
       setIsSending(true);
       setError(null);
-      
-      // Phase 3: Include CC/BCC in test email request
-      // Determine if CC/BCC have merge fields - if so, use as templates
-      const ccHasMergeFields = cc.includes('{');
-      const bccHasMergeFields = bcc.includes('{');
-      
+
+      const parts = splitCcBcc();
+      // Use the first selected contact (or first contact) so the test renders
+      // exactly like a real send, including custom fields.
+      const sample = selectedContacts[0] || contacts[0];
       const request = new models.TestEmailRequest({
         testAddress,
         subjectTemplate: subject,
         bodyTemplate: body,
         isHTML,
         attachments,
-        cc: ccHasMergeFields ? '' : cc,  // Static CC
-        bcc: bccHasMergeFields ? '' : bcc,  // Static BCC
-        ccTemplate: ccHasMergeFields ? cc : '',  // CC with merge fields
-        bccTemplate: bccHasMergeFields ? bcc : '',  // BCC with merge fields
-        sampleFirstName: contacts[0]?.firstName || 'John',
-        sampleLastName: contacts[0]?.lastName || 'Doe'
+        ...parts,
+        contact: sample,
+        overwriteEmail: false,
+        sampleFirstName: sample?.firstName || 'John',
+        sampleLastName: sample?.lastName || 'Doe',
       });
-      
+
       await SendTestEmail(request);
-      
       setSuccessMessage(`Test email sent successfully to ${testAddress}`);
       setTimeout(() => setSuccessMessage(null), 5000);
     } catch (err: any) {
@@ -416,130 +476,117 @@ function App() {
     } finally {
       setIsSending(false);
     }
-  }, [subject, body, isHTML, attachments, contacts, cc, bcc]);
+  }, [subject, body, isHTML, attachments, selectedContacts, contacts, splitCcBcc]);
 
   /**
-   * Send emails to all loaded contacts
-   * Shows confirmation dialog and tracks progress
-   * Phase 1: Now sends only to selected contacts
+   * Send to selected contacts through the backend campaign engine, which
+   * preflights, dedupes, applies suppression, and returns a typed result.
    */
   const handleSendAll = useCallback(async () => {
-    // Phase 1: Get only selected contacts
-    const selectedContacts = contacts.filter((_, i) => selectedIndices.has(i));
-    
     if (selectedContacts.length === 0) {
       setError('No contacts selected');
       return;
     }
-
     if (!subject.trim()) {
       setError('Please enter a subject');
       return;
     }
-
     if (!body.trim()) {
       setError('Please enter a message body');
       return;
     }
 
-    const confirmed = window.confirm(
-      `Are you sure you want to send ${selectedContacts.length} emails?\n\nThis action cannot be undone.`
-    );
-    if (!confirmed) return;
+    const request = new models.EmailRequest({
+      contacts: selectedContacts,
+      subjectTemplate: subject,
+      bodyTemplate: body,
+      isHTML,
+      attachments,
+      ...splitCcBcc(),
+    });
+
+    // Preflight first; block sending on any error.
+    let pf: PreflightResult;
+    try {
+      pf = await PreflightCampaign(request);
+    } catch (err: any) {
+      setError(`Preflight failed: ${err.message || err}`);
+      return;
+    }
+    setPreflight(pf);
+    if (!pf.canSend) {
+      setError(`Cannot send: ${pf.errors.map((e) => e.message).join('; ')}`);
+      return;
+    }
+
+    // Honor the confirm-before-send setting.
+    if (settings.confirmSend) {
+      const warn = pf.warnings.length > 0 ? `\n\nWarnings:\n- ${pf.warnings.map((w) => w.message).join('\n- ')}` : '';
+      const confirmed = window.confirm(
+        `Send ${pf.recipientCount} email(s)? This cannot be undone.${warn}`
+      );
+      if (!confirmed) return;
+    }
 
     try {
       setIsSending(true);
+      setIsCancelling(false);
       setError(null);
       setProgress(null);
       setProgressLogs([]);
       setSendResult(null);
-
-      // Phase 3: Include CC/BCC in bulk email request
-      // Determine if CC/BCC have merge fields - if so, use as templates
-      const ccHasMergeFields = cc.includes('{');
-      const bccHasMergeFields = bcc.includes('{');
-
-      const request = new models.EmailRequest({
-        contacts: selectedContacts,
-        subjectTemplate: subject,
-        bodyTemplate: body,
-        isHTML,
-        attachments,
-        cc: ccHasMergeFields ? '' : cc,  // Static CC
-        bcc: bccHasMergeFields ? '' : bcc,  // Static BCC
-        ccTemplate: ccHasMergeFields ? cc : '',  // CC with merge fields
-        bccTemplate: bccHasMergeFields ? bcc : ''  // BCC with merge fields
-      });
+      setLastRequest(request);
 
       const result = await SendBulkEmails(request);
-
       setSendResult(result);
     } catch (err: any) {
       setError(`Failed to send emails: ${err.message || err}`);
     } finally {
       setIsSending(false);
+      setIsCancelling(false);
     }
-  }, [contacts, selectedIndices, subject, body, isHTML, attachments, cc, bcc]);
+  }, [selectedContacts, subject, body, isHTML, attachments, splitCcBcc, settings.confirmSend]);
 
   /**
-   * Phase 1: Retry sending to failed contacts
-   * Re-queues failed contacts for another send attempt
+   * Retry only failed recipients via the backend, which appends attempts
+   * without double-counting successes.
    */
   const handleRetryFailed = useCallback(async () => {
-    if (!sendResult?.failedContacts || sendResult.failedContacts.length === 0) {
-      setError('No failed contacts to retry');
+    if (!lastRequest || !sendResult || sendResult.failed === 0) {
+      setError('No failed recipients to retry');
       return;
     }
-
-    const confirmed = window.confirm(
-      `Retry sending to ${sendResult.failedContacts.length} failed contacts?`
-    );
-    if (!confirmed) return;
-
+    if (settings.confirmSend && !window.confirm(`Retry ${sendResult.failed} failed recipient(s)?`)) {
+      return;
+    }
     try {
       setIsSending(true);
       setError(null);
       setProgress(null);
       setProgressLogs([]);
-
-      // Phase 3: Include CC/BCC in retry request (same logic as main send)
-      const ccHasMergeFields = cc.includes('{');
-      const bccHasMergeFields = bcc.includes('{');
-
-      const request = new models.EmailRequest({
-        contacts: sendResult.failedContacts,
-        subjectTemplate: subject,
-        bodyTemplate: body,
-        isHTML,
-        attachments,
-        cc: ccHasMergeFields ? '' : cc,
-        bcc: bccHasMergeFields ? '' : bcc,
-        ccTemplate: ccHasMergeFields ? cc : '',
-        bccTemplate: bccHasMergeFields ? bcc : ''
-      });
-
-      const result = await SendBulkEmails(request);
-
-      // Merge results: add successful retries to previous totals
-      setSendResult(prev => {
-        if (!prev) return result;
-        // Create a new SendResult with merged data
-        return new models.SendResult({
-          totalSent: prev.totalSent + result.totalSent,
-          totalFailed: result.totalFailed,
-          failedContacts: result.failedContacts,
-          logs: [...(prev.logs || []), ...(result.logs || [])]
-        });
-      });
+      const result = await RetryFailed(lastRequest);
+      setSendResult(result);
     } catch (err: any) {
       setError(`Failed to retry emails: ${err.message || err}`);
     } finally {
       setIsSending(false);
     }
-  }, [sendResult, subject, body, isHTML, attachments, cc, bcc]);
+  }, [lastRequest, sendResult, settings.confirmSend]);
 
   /**
-   * Phase 1: Handle preview email callback
+   * Cancel the in-flight campaign. Unattempted recipients are marked cancelled.
+   */
+  const handleCancel = useCallback(async () => {
+    setIsCancelling(true);
+    try {
+      await CancelCampaign();
+    } catch (err) {
+      console.error('Cancel failed:', err);
+    }
+  }, []);
+
+  /**
+   * Renders a preview for the contact selected in the preview modal.
    * Returns rendered subject and body for a specific contact
    */
   const handlePreviewEmail = useCallback(async (contact: Contact): Promise<{ subject: string; body: string } | null> => {
@@ -571,7 +618,7 @@ function App() {
     }
   }, []);
 
-  // Reset handler - Phase 1: Now clears all new state
+  // Reset campaign-specific UI state after a completed or dismissed run.
   const handleReset = useCallback(() => {
     setSendResult(null);
     setProgress(null);
@@ -581,15 +628,18 @@ function App() {
     setSubject('');
     setBody('');
     setAttachments([]);
+    setAttachmentInfo([]);
     setParseErrors([]);
     setParseWarnings([]);
-    setSelectedIndices(new Set());
+    setSelectedIds(new Set());
     setHeaders([]);
     setDuplicates([]);
+    setPreflight(null);
+    setLastRequest(null);
   }, []);
 
   /**
-   * Phase 2: Load a template into the editor
+   * Loads a saved template into the editor.
    */
   const handleLoadTemplate = useCallback((template: WailsEmailTemplate) => {
     setSubject(template.subject);
@@ -600,7 +650,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Save current email as a template
+   * Saves the current composition as a reusable template.
    */
   const handleSaveTemplate = useCallback(async (name: string) => {
     try {
@@ -620,7 +670,7 @@ function App() {
   }, [subject, body, isHTML, loadTemplates]);
 
   /**
-   * Phase 2: Delete a template
+   * Deletes a user-created template and refreshes the list.
    */
   const handleDeleteTemplate = useCallback(async (id: string) => {
     try {
@@ -634,7 +684,7 @@ function App() {
   }, [loadTemplates]);
 
   /**
-   * Phase 2: Save settings
+   * Persists validated settings and updates local UI state.
    */
   const handleSaveSettings = useCallback(async (newSettings: WailsAppSettings) => {
     try {
@@ -655,7 +705,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Clear recent files
+   * Clears the persisted recent-file list.
    */
   const handleClearRecentFiles = useCallback(async () => {
     try {
@@ -667,7 +717,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Open a recent file
+   * Re-imports a selected recent contact file.
    */
   const handleOpenRecentFile = useCallback(async (path: string) => {
     try {
@@ -683,9 +733,9 @@ function App() {
       setDuplicates(result.duplicates || []);
       
       if (result.contacts && result.contacts.length > 0) {
-        setSelectedIndices(new Set(result.contacts.map((_, i) => i)));
+        setSelectedIds(new Set(result.contacts.map((c) => c.id)));
       } else {
-        setSelectedIndices(new Set());
+        setSelectedIds(new Set());
       }
       
       if (result.headers && result.headers.length > 0) {
@@ -709,12 +759,12 @@ function App() {
     }
   }, []);
 
-  // Phase 1: Selected contacts count and check
-  const selectedCount = selectedIndices.size;
+  // Derive the selected-recipient count and send eligibility.
+  const selectedCount = selectedIds.size;
   const canSend = selectedCount > 0 && subject.trim() && body.trim() && !isSending && outlookStatus === 'ok';
 
   /**
-   * Phase 2: Keyboard shortcuts handler
+   * Registers keyboard shortcuts while the application is mounted.
    * Ctrl+O: Open file, Ctrl+S: Save template, Ctrl+,: Settings, Ctrl+D: Dark mode
    */
   useEffect(() => {
@@ -855,11 +905,11 @@ function App() {
 
         {/* Show results if complete */}
         {sendResult ? (
-          <ResultsSummary 
-            result={sendResult} 
+          <ResultsSummary
+            result={sendResult}
             onExportLogs={handleExportLogs}
             onReset={handleReset}
-            onRetryFailed={sendResult.failedContacts && sendResult.failedContacts.length > 0 ? handleRetryFailed : undefined}
+            onRetryFailed={sendResult.failed > 0 ? handleRetryFailed : undefined}
           />
         ) : (
           <>
@@ -874,17 +924,17 @@ function App() {
                   errors={parseErrors}
                   isLoading={isLoadingFile}
                 />
-                <ContactTable 
+                <ContactTable
                   contacts={contacts}
-                  selectedIndices={selectedIndices}
-                  onSelectionChange={setSelectedIndices}
+                  selectedIds={selectedIds}
+                  onSelectionChange={setSelectedIds}
                   duplicates={duplicates}
                 />
               </div>
 
               {/* Right Column */}
               <div>
-                {/* Phase 2: Template Manager */}
+                {/* Template manager */}
                 <div className="card" style={{ marginBottom: '1rem' }}>
                   <div className="card-header">
                     <h2>Email Templates</h2>
@@ -919,6 +969,8 @@ function App() {
                   attachments={attachments}
                   onAddAttachments={handleAddAttachments}
                   onRemoveAttachment={handleRemoveAttachment}
+                  onFilesDropped={handleFilesDropped}
+                  attachmentInfo={attachmentInfo}
                 />
               </div>
             </div>
@@ -940,7 +992,7 @@ function App() {
               </div>
               <div className="card-body">
                 <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                  {/* Phase 1: Preview Button */}
+                  {/* Preview button */}
                   <button
                     className="btn btn-secondary btn-lg"
                     onClick={() => setShowPreviewModal(true)}
@@ -975,6 +1027,16 @@ function App() {
                       </>
                     )}
                   </button>
+                  {isSending && (
+                    <button
+                      className="btn btn-warning btn-lg"
+                      onClick={handleCancel}
+                      disabled={isCancelling}
+                      aria-label="Cancel the current send"
+                    >
+                      {isCancelling ? 'Cancelling…' : 'Cancel'}
+                    </button>
+                  )}
                 </div>
                 
                 {!canSend && !isSending && (
@@ -994,7 +1056,7 @@ function App() {
           </>
         )}
 
-        {/* Phase 1: Preview Modal */}
+        {/* Preview modal */}
         <PreviewModal
           isOpen={showPreviewModal}
           onClose={() => setShowPreviewModal(false)}
@@ -1006,7 +1068,7 @@ function App() {
           onPreview={handlePreviewEmail}
         />
 
-        {/* Phase 2: Settings Modal */}
+        {/* Settings modal */}
         <SettingsModal
           isOpen={showSettingsModal}
           onClose={() => setShowSettingsModal(false)}
