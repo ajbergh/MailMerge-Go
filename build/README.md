@@ -2,6 +2,11 @@
 
 The build directory is used to house all the build files and assets for your application. 
 
+Build entry points live in [`../scripts`](../scripts): use
+`build-windows.ps1` for the supported Windows release, or the Linux/macOS shell
+scripts on their native platforms. Generated binaries under `bin/` are build
+outputs and are not source-controlled.
+
 The structure is:
 
 * bin - Output directory

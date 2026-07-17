@@ -1,13 +1,9 @@
 /**
  * PreviewModal Component - Email Preview Modal
  * 
- * Phase 1 (v1.2): New component for previewing how an email will look
- * for a specific contact before sending.
- * 
  * Features:
  * - Contact selector dropdown to preview for any contact
- * - Shows rendered subject line with merge fields replaced
- * - Shows rendered body with merge fields replaced
+ * - Shows subject and body rendered by the backend merge pipeline
  * - Displays HTML emails in an iframe for accurate preview
  * - Shows attachments that will be included
  * - Close button and click-outside-to-close functionality

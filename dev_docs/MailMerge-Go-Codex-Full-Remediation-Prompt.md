@@ -1,4 +1,10 @@
-# Implementation Prompt: MailMerge-Go Full Remediation and Production-Readiness Plan
+# Historical Implementation Prompt: MailMerge-Go Full Remediation and Production-Readiness Plan
+
+> This is the original remediation brief and its captured baseline, retained for
+> implementation history. It intentionally describes pre-remediation defects and
+> superseded repository layout. For current behavior, use the root
+> [README](../README.md), [ROADMAP](../ROADMAP.md), and the focused documents in
+> this directory.
 
 ---
 

@@ -7,14 +7,13 @@ struct are automatically bound to the frontend and can be called from JavaScript
 
 The App orchestrates:
   - File operations (selecting and parsing contact files)
-  - Email composition and template merging
-  - Outlook integration for sending emails
-  - Log export functionality
-  - Phase 2: Template management and settings persistence
+  - Preview, preflight, and campaign execution through the shared renderer
+  - Sender capability checks and local Outlook integration
+  - Template, settings, suppression, and campaign-history persistence
+  - Log export and Wails runtime dialogs/events
 
-Thread Safety:
-  - All Outlook operations are internally synchronized
-  - File operations are stateless and thread-safe
+Thread safety: the App serializes access to the active campaign cancellation
+function and last result. The Outlook sender owns its dedicated COM worker.
 */
 package main
 
@@ -37,10 +36,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App struct holds the application state and service dependencies.
-// It is the primary struct bound to the frontend, providing all
-// functionality accessible from the UI.
-// Phase 2: Added template and settings services.
+// App holds the Wails-bound application state and service dependencies.
 type App struct {
 	ctx             context.Context              // Wails context for runtime operations
 	fileService     *services.FileService        // Handles CSV/Excel file parsing
@@ -61,9 +57,9 @@ type App struct {
 	buildDate string
 }
 
-// NewApp creates a new App application struct with initialized services.
-// This is called once during application startup.
-// Phase 2: Added template and settings service initialization.
+// NewApp constructs the application services and wires them into the campaign
+// runner. Persistent-service initialization failures are non-fatal: the related
+// UI operation returns an availability error instead.
 func NewApp() *App {
 	templateService, err := services.NewTemplateService()
 	if err != nil {
@@ -245,27 +241,27 @@ func (a *App) PreviewMerge(subjectTemplate, bodyTemplate, sampleFirstName, sampl
 	return &result
 }
 
-// GetMergeFields returns the list of available merge fields that can be
-// used in email templates. Returns default fields: {FirstName}, {LastName}, {Email}
-// For dynamic fields from imported files, use GetMergeFieldsFromHeaders.
+// GetMergeFields returns the standard canonical merge tokens. For imported
+// columns, use GetMergeFieldsFromHeaders to create the matching canonical tokens.
 func (a *App) GetMergeFields() []string {
 	return a.mergeService.GetAvailableFields()
 }
 
-// GetMergeFieldsFromHeaders converts column headers from an imported file
-// to merge field format. Phase 1: Enables dynamic merge fields from any column.
+// GetMergeFieldsFromHeaders canonicalizes imported column headers and returns the
+// corresponding merge tokens (for example, `Account Manager` becomes
+// `{{account_manager}}`).
 //
 // Parameters:
 //   - headers: Column headers from the imported file
 //
 // Returns:
-//   - []string: Merge fields in {FieldName} format
+//   - []string: Canonical merge tokens in {{field_id}} format
 func (a *App) GetMergeFieldsFromHeaders(headers []string) []string {
 	return a.mergeService.GetMergeFieldsFromHeaders(headers)
 }
 
-// PreviewMergeForContact renders the subject and body templates for a specific contact.
-// Phase 1: Added for the email preview modal feature.
+// PreviewMergeForContact renders subject and body templates for one contact using
+// the same merge service used by the campaign pipeline.
 //
 // Parameters:
 //   - subjectTemplate: Email subject with merge fields
@@ -634,7 +630,7 @@ func (a *App) GetAppInfo() map[string]string {
 	}
 }
 
-// ================== Phase 2: Template Operations ==================
+// ================== Template Operations ==================
 
 // GetAllTemplates returns all saved email templates.
 // Templates are sorted with built-in templates first, then user templates alphabetically.
@@ -693,7 +689,7 @@ func (a *App) DeleteTemplate(id string) error {
 	return a.templateService.DeleteTemplate(id)
 }
 
-// ================== Phase 2: Settings Operations ==================
+// ================== Settings Operations ==================
 
 // GetSettings returns the current application settings.
 //

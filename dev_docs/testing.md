@@ -47,11 +47,10 @@ npm run test     # vitest (jsdom)
 npm run build    # tsc + vite build
 ```
 
-Note: the toolchain uses Vite 3, so vitest is pinned to a compatible 0.34.x and
-transforms JSX via esbuild (the React fast-refresh plugin's preamble is
-incompatible with jsdom). `tsconfig.json` sets `types: []` and excludes test files
-from the production `tsc` so a transitive modern `@types/node` cannot break the
-Vite 3 / TypeScript 4.6 build.
+The frontend uses Vite 8, Vitest 4, and TypeScript 6. `vitest.config.ts` runs
+tests in jsdom and explicitly uses esbuild's automatic JSX runtime because React
+Fast Refresh is not needed in tests. `tsconfig.json` excludes test files from the
+production type check.
 
 ## CI
 

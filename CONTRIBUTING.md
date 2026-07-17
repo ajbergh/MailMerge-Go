@@ -5,7 +5,7 @@ Thanks for your interest in improving MailMerge Go.
 ## Prerequisites
 
 - Go 1.24+
-- Node.js 20+
+- Node.js 20.19+ or 22.12+
 - Wails CLI v2.11.0 (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0`)
 
 ## Development
@@ -28,6 +28,10 @@ npm ci
 npm run test
 npm run build
 ```
+
+To verify the packaged Windows application locally, run
+`./scripts/build-windows.ps1`. The Linux and macOS scripts are intended to run
+on their respective native hosts.
 
 Optionally: `golangci-lint run ./backend/...`.
 

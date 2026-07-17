@@ -1,23 +1,12 @@
 /*
 Models Package - Data Structures
 
-This package defines all data structures used throughout the MailMerge application.
-These models are shared between the Go backend and the frontend via Wails bindings.
+This package defines the data structures shared across the MailMerge application.
+The Wails-bound types cover contacts and import diagnostics, composition requests,
+send logs, templates, settings, and attachment metadata.
 
 All structs with JSON tags are automatically serialized/deserialized when passed
 between Go and JavaScript.
-
-Phase 1 Updates (v1.2):
-  - Contact now includes CustomFields map for dynamic merge fields
-  - ParseResult includes Warnings and Duplicates for better feedback
-  - SendResult includes FailedContacts for retry functionality
-
-Phase 2 Updates (v1.3):
-  - Added EmailTemplate model for template persistence
-  - Added AppSettings model for user preferences
-
-Phase 3 Updates (v1.4):
-  - EmailRequest and TestEmailRequest now support CC and BCC fields
 */
 package models
 
@@ -65,8 +54,7 @@ type EmailLog struct {
 }
 
 // ParseResult represents the result of parsing a contact file (CSV or Excel).
-// Contains both successfully parsed contacts and any parsing errors encountered.
-// Phase 1: Now includes warnings, duplicates, and detected column headers.
+// Contains successfully parsed contacts, normalized headers, and row diagnostics.
 type ParseResult struct {
 	Contacts   []Contact `json:"contacts"`             // Successfully parsed contacts
 	Errors     []string  `json:"errors,omitempty"`     // Row-level parsing errors
@@ -77,8 +65,8 @@ type ParseResult struct {
 }
 
 // EmailRequest represents a request to send bulk emails.
-// Contains all data needed to execute a mail merge operation.
-// Phase 3: Added CC and BCC fields for carbon copy recipients.
+// Contains all data needed to execute a mail merge operation, including optional
+// static and personalized CC/BCC values.
 type EmailRequest struct {
 	Contacts        []Contact `json:"contacts"`              // List of recipients
 	SubjectTemplate string    `json:"subjectTemplate"`       // Subject with merge fields
@@ -92,8 +80,8 @@ type EmailRequest struct {
 }
 
 // TestEmailRequest represents a request to send a single test email.
-// Includes sample data to preview how merge fields will be rendered.
-// Phase 3: Added CC and BCC fields for carbon copy recipients.
+// Includes a representative contact so merge fields render as they do in bulk
+// sending, plus optional static and personalized CC/BCC values.
 type TestEmailRequest struct {
 	TestAddress     string   `json:"testAddress"`           // Email address to send test to
 	SubjectTemplate string   `json:"subjectTemplate"`       // Subject with merge fields
@@ -128,8 +116,8 @@ type ProgressUpdate struct {
 }
 
 // SendResult represents the final result of a bulk send operation.
-// Contains aggregate counts and detailed logs for each email sent.
-// Phase 1: Now includes FailedContacts for retry functionality.
+// Contains aggregate counts and detailed logs for each email sent. New campaign
+// flows use campaign.CampaignResult, which retains attempt history.
 type SendResult struct {
 	TotalSent      int        `json:"totalSent"`                // Number of emails sent successfully
 	TotalFailed    int        `json:"totalFailed"`              // Number of emails that failed
@@ -145,11 +133,10 @@ type FileInfo struct {
 	Size int64  `json:"size"` // File size in bytes
 }
 
-// ==================== Phase 2 Models ====================
+// ==================== Persisted Models ====================
 
 // EmailTemplate represents a saved email template for reuse.
 // Templates can be saved, loaded, and managed by the user.
-// Phase 2: New model for template persistence.
 type EmailTemplate struct {
 	ID        string    `json:"id"`                         // Unique identifier (UUID)
 	Name      string    `json:"name"`                       // User-friendly template name
@@ -163,7 +150,6 @@ type EmailTemplate struct {
 
 // AppSettings represents user preferences and application settings.
 // These are persisted to disk and loaded on startup.
-// Phase 2: New model for centralized settings management.
 type AppSettings struct {
 	// Display Settings
 	Theme         string `json:"theme"`         // "light", "dark", or "system"

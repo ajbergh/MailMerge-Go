@@ -4,21 +4,15 @@
  * This module provides TypeScript type definitions for the MailMerge application.
  * It includes both re-exports of Wails-generated types and custom frontend-only types.
  * 
- * For types that are bound from the Go backend (Contact, EmailLog, SendResult, etc.),
+ * For types that are bound from the Go backend (Contact, EmailLog, campaign results, etc.),
  * use the types from '../wailsjs/go/models' directly. These are automatically generated
  * by Wails during the build process.
  * 
  * This file defines additional types used only in the frontend, such as ProgressUpdate
  * for real-time event handling.
  * 
- * Phase 1 Updates (v1.2):
- *   - Contact now includes customFields for dynamic merge field support
- *   - ParseResult includes warnings, duplicates, and headers
- *   - SendResult includes failedContacts for retry functionality
- * 
- * Phase 2 Updates (v1.3):
- *   - EmailTemplate for saved email templates
- *   - AppSettings for user preferences
+ * Frontend-only aliases below support components that do not consume the
+ * generated Wails classes directly.
  */
 
 // Re-export Wails types for convenience
@@ -26,8 +20,7 @@ export { models } from '../../wailsjs/go/models';
 
 /**
  * Contact type alias - represents a single email recipient
- * Mirrors the Go models.Contact struct
- * Phase 1: Added customFields for dynamic merge field support
+ * Mirrors the Go models.Contact shape.
  */
 export type Contact = {
   id: string;                           // Stable per-import identifier (selection/dedupe/editing)
@@ -38,8 +31,7 @@ export type Contact = {
 };
 
 /**
- * ParseResult type alias - result of parsing a contact file
- * Phase 1: Added warnings, duplicates, and headers
+ * ParseResult type alias - result of parsing a contact file.
  */
 export type ParseResult = {
   contacts: Contact[];      // Successfully parsed contacts
@@ -60,13 +52,12 @@ export type EmailLog = {
   email: string;           // Contact's email address
   status: string;          // "Success" or "Failure"
   errorMessage?: string;   // Error details if failed (omitted on success)
-  timestamp: any;          // ISO 8601 timestamp of send attempt
+  timestamp: string;       // RFC 3339 timestamp of send attempt
 };
 
 /**
- * SendResult type alias - aggregate result of bulk send operation
- * Contains summary counts and detailed per-email logs
- * Phase 1: Added failedContacts for retry functionality
+ * SendResult is a legacy UI summary shape. New campaign flows use the generated
+ * campaign.CampaignResult type, which retains full attempt history.
  */
 export type SendResult = {
   totalSent: number;          // Number of emails sent successfully
@@ -91,11 +82,10 @@ export interface ProgressUpdate {
   timestamp: string;     // ISO 8601 timestamp of this update
 }
 
-// ==================== Phase 2 Types ====================
+// ==================== Persisted UI Types ====================
 
 /**
- * EmailTemplate - saved email template for reuse
- * Phase 2: New type for template persistence
+ * EmailTemplate - saved email template for reuse.
  */
 export type EmailTemplate = {
   id: string;           // Unique identifier (UUID)
@@ -109,8 +99,7 @@ export type EmailTemplate = {
 };
 
 /**
- * AppSettings - user preferences and application settings
- * Phase 2: New type for centralized settings management
+ * AppSettings - user preferences and application settings.
  */
 export type AppSettings = {
   // Display Settings

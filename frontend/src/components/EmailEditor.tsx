@@ -3,22 +3,17 @@
  * 
  * This component provides a rich email composition experience with:
  * - Subject line input with merge field insertion
- * - CC and BCC recipient fields with merge field support (Phase 3)
+ * - CC and BCC recipient fields with merge field support
  * - Body editor with both plain text and rich text (HTML) modes
  * - Merge field helper buttons for easy personalization
- * - Live preview tab showing how merged email will look
+ * - Preview rendered by the same backend pipeline used for sending
  * 
  * The editor uses ReactQuill for rich text editing, providing a familiar
  * word-processor-like experience with formatting options.
  * 
- * Merge Fields:
- * - {FirstName} - Replaced with contact's first name
- * - {LastName} - Replaced with contact's last name
- * - {Email} - Replaced with contact's email address
- * 
- * Phase 3 Updates:
- * - Added CC and BCC fields with toggle visibility (collapsible)
- * - CC/BCC support merge field insertion for dynamic recipient lists
+ * Merge fields use canonical tokens such as `{{first_name}}`, `{{last_name}}`,
+ * and `{{email}}`. Legacy single-brace tokens remain supported by the backend
+ * for existing templates.
  */
 import { useState, useRef, useEffect } from 'react';
 import ReactQuill from 'react-quill';
@@ -28,8 +23,7 @@ import DOMPurify from 'dompurify';
 import { PreviewMerge } from '../../wailsjs/go/main/App';
 
 /**
- * Props for the EmailEditor component
- * Phase 3: Added CC and BCC props for additional recipients
+ * Props for the email composition editor.
  */
 interface EmailEditorProps {
   /** Current email subject text */
@@ -60,8 +54,7 @@ interface EmailEditorProps {
  * EmailEditor - Full email composition interface
  * 
  * Provides tabbed interface with Compose and Preview modes.
- * Supports inserting merge fields at cursor position in subject, CC, BCC, or body.
- * Phase 3: Added collapsible CC/BCC section for cleaner UI.
+ * Supports inserting merge fields at the cursor in the subject, CC, BCC, or body.
  */
 export function EmailEditor({
   subject,

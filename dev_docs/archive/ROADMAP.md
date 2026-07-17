@@ -1,4 +1,8 @@
-# MailMerge Go - Product Roadmap
+# Archived MailMerge Go Product Roadmap
+
+> Historical planning document. It includes proposals that are not implemented
+> and a superseded cross-platform Outlook vision. See the root
+> [ROADMAP](../../ROADMAP.md) for the current authoritative status.
 
 > **Vision**: A cross-platform, feature-rich mail merge application that empowers users to send personalized bulk emails through Microsoft Outlook on both Windows and macOS.
 

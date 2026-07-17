@@ -33,6 +33,13 @@ semantic versioning.
   compatibility, testing, security, Graph sender design; CONTRIBUTING/SECURITY.
 
 ### Changed
+- Aligned the Wails module with the pinned v2.11.0 CLI, switched Wails frontend
+  installs to `npm ci`, and added Windows, Linux, and macOS build entry points.
+- Upgraded the frontend build/test toolchain to Vite 8, Vitest 4, and TypeScript
+  6; Wails timestamp bindings now expose RFC 3339 JSON timestamps as TypeScript
+  strings.
+- Updated current documentation and active code comments to describe the
+  canonical merge pipeline, supported build commands, and current toolchain.
 - `SendBulkEmails` returns a typed `CampaignResult` (was an untyped summary);
   Outlook COM removed from `backend/services`.
 - Removed the hard-coded 500 ms send delay (now sourced from settings).

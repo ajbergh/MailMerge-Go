@@ -1,29 +1,23 @@
 /*
 File Service - Contact File Import
 
-This service handles importing contact lists from CSV and Excel files.
-It provides a unified interface for parsing both file formats and
-extracting contact information.
+This service imports contact lists from CSV and Excel files into the shared
+Contact model. It validates structure, protects import resource usage, and keeps
+all source columns available to the merge-field schema.
 
 Supported Formats:
   - CSV (.csv) - Comma-separated values with header row
-  - Excel (.xlsx) - Microsoft Excel 2007+ format (first sheet only)
-
-Phase 1 Updates (v1.2):
-  - Parses ALL columns from the file, not just FirstName/LastName/Email
-  - Returns all column headers for dynamic merge field generation
-  - Detects and reports duplicate email addresses
-  - Stores custom fields in Contact.CustomFields map
+  - Excel (.xlsx) - Microsoft Excel 2007+ format (first worksheet)
 
 Column Detection:
   - Case-insensitive column name matching
   - Supports variations: "FirstName", "First Name", "first_name"
   - Email column is required; all other columns are optional
 
-Error Handling:
-  - Returns parse errors for invalid rows without failing entire import
-  - Reports duplicate emails as warnings (still includes contacts)
-  - Validates email format with basic @ and . check
+Error handling:
+  - Returns row-level errors and warnings without discarding valid contacts
+  - Reports duplicate email groups for preflight policy resolution
+  - Validates addresses with the shared net/mail-based email package
 */
 package services
 
@@ -63,9 +57,8 @@ func stripBOM(s string) string {
 	return strings.TrimPrefix(s, "\xef\xbb\xbf")
 }
 
-// ParseContactFile parses a contact file and extracts contact information.
-// Automatically detects file format based on extension.
-// Phase 1: Now returns all column headers and detects duplicates.
+// ParseContactFile parses a CSV or XLSX contact file, returns normalized headers
+// and row diagnostics, and records duplicate recipient groups for preflight.
 //
 // Parameters:
 //   - filePath: Absolute path to the CSV or Excel file
@@ -98,9 +91,8 @@ func (fs *FileService) ParseContactFile(filePath string) (*models.ParseResult, e
 	return result, nil
 }
 
-// parseCSV parses a CSV file and extracts contacts.
-// Expects a header row with column names.
-// Phase 1: Now extracts all columns as custom fields.
+// parseCSV parses a CSV file with a required header row and retains every column
+// as a contact field.
 func (fs *FileService) parseCSV(filePath string) (*models.ParseResult, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -202,9 +194,8 @@ func isBlankRow(row []string) bool {
 	return true
 }
 
-// parseExcel parses an Excel file (.xlsx) and extracts contacts.
-// Only reads from the first sheet in the workbook.
-// Phase 1: Now extracts all columns as custom fields.
+// parseExcel parses the first worksheet in an XLSX file and retains every column
+// as a contact field.
 func (fs *FileService) parseExcel(filePath string) (*models.ParseResult, error) {
 	f, err := excelize.OpenFile(filePath)
 	if err != nil {
@@ -302,9 +293,8 @@ func (fs *FileService) findColumnIndices(header []string) map[string]int {
 	return indices
 }
 
-// extractContact creates a Contact from a data row using the provided column indices.
-// Phase 1: Now populates CustomFields with all columns beyond FirstName/LastName/Email.
-// Validates that email is present and has a valid format.
+// extractContact creates a Contact from one imported row, including all mapped
+// source columns in CustomFields, and validates the required email address.
 //
 // Parameters:
 //   - row: Array of cell values from the current row

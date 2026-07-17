@@ -5,13 +5,6 @@
  * Import components from this file for cleaner imports throughout the application.
  * 
  * Example: import { FileUpload, ContactTable, EmailEditor } from './components';
- * 
- * Phase 1 Updates (v1.2):
- *   - Added PreviewModal for email preview functionality
- * 
- * Phase 2 Updates (v1.3):
- *   - Added TemplateManager for email template management
- *   - Added SettingsModal for centralized settings panel
  */
 export { FileUpload } from './FileUpload';
 export { ContactTable } from './ContactTable';

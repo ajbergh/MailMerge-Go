@@ -1,9 +1,8 @@
 /*
 Template Service - Email Template Persistence
 
-Phase 2 (v1.3): New service for managing saved email templates.
-
-This service handles:
+This service validates and atomically persists user templates while protecting
+built-in templates from modification or deletion. It handles:
   - Loading templates from disk on startup
   - Saving templates to user's app data folder
   - CRUD operations for templates

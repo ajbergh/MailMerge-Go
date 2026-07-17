@@ -7,7 +7,7 @@
  * 1. Import Contacts - Load contacts from CSV/Excel files
  * 2. Compose Email - Write subject and body with merge fields
  * 3. Manage Attachments - Add files to attach to all emails
- * 4. Send Emails - Test single emails or send to all contacts
+ * 4. Send Emails - Test a representative contact or send to selected contacts
  * 5. View Results - See success/failure summary and export logs
  * 
  * State Management:
@@ -23,11 +23,8 @@
  * - ProgressTracker: Real-time send progress display
  * - ResultsSummary: Final results and log export
  * 
- * Phase 2 Additions (v1.3):
- * - TemplateManager: Save/load email templates
- * - SettingsModal: Application settings panel
- * - Keyboard shortcuts for quick actions
- * - Theme management synced with settings
+ * It also coordinates persisted templates and settings, preflight feedback,
+ * cancellation/retry, keyboard shortcuts, and theme state.
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Mail, AlertCircle, Send, FlaskConical, CheckCircle2, Sun, Moon, Eye, RefreshCw, Settings } from 'lucide-react';
@@ -61,11 +58,11 @@ import {
   GetMergeFieldsFromHeaders,
   PreviewMergeForContact,
   ExportLogsToCSV,
-  // Phase 2: Template bindings
+  // Template bindings
   GetAllTemplates,
   SaveTemplate,
   DeleteTemplate,
-  // Phase 2: Settings bindings
+  // Settings bindings
   GetSettings,
   UpdateSettings,
   GetRecentFiles,
@@ -81,7 +78,7 @@ type CampaignResult = campaign.CampaignResult;
 type PreflightResult = campaign.PreflightResult;
 type FileInfo = models.FileInfo;
 
-// Use Wails-generated types for Phase 2 features (avoid type mismatches)
+// Use Wails-generated types at the API boundary to avoid type drift.
 type WailsEmailTemplate = models.EmailTemplate;
 type WailsAppSettings = models.AppSettings;
 
@@ -106,7 +103,7 @@ function App() {
   const [headers, setHeaders] = useState<string[]>([]);
   const [duplicates, setDuplicates] = useState<string[]>([]);
   
-  // Phase 1: Preview modal state
+  // Preview modal state
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
   // Email composition state
@@ -115,7 +112,7 @@ function App() {
   const [isHTML, setIsHTML] = useState(true);
   const [mergeFields, setMergeFields] = useState<string[]>(['{FirstName}', '{LastName}', '{Email}']);
   
-  // Phase 3: CC/BCC state
+  // CC/BCC state
   const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
 
@@ -143,11 +140,11 @@ function App() {
     return (saved === 'dark') ? 'dark' : 'light';
   });
 
-  // Phase 2: Templates state
+  // Templates state
   const [templates, setTemplates] = useState<WailsEmailTemplate[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
 
-  // Phase 2: Settings state
+  // Settings state
   const [settings, setSettings] = useState<WailsAppSettings>(new models.AppSettings({
     theme: 'system',
     defaultFormat: 'html',
@@ -163,9 +160,8 @@ function App() {
   // ==================== Initialization Effects ====================
 
   /**
-   * Apply theme to document on mount and when theme changes
-   * Persists theme preference to localStorage
-   * Phase 2: Now syncs with settings service
+   * Applies the selected theme to the document and keeps the local UI preference
+   * available before persisted settings finish loading.
    */
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -173,8 +169,7 @@ function App() {
   }, [theme]);
 
   /**
-   * Toggle between light and dark themes
-   * Phase 2: Also updates settings
+   * Toggles the local theme and persists the resulting setting.
    */
   const toggleTheme = useCallback(() => {
     setTheme(prev => {
@@ -187,7 +182,7 @@ function App() {
   }, [settings]);
 
   /**
-   * Phase 2: Load templates from backend
+   * Loads saved and built-in templates from the backend.
    */
   const loadTemplates = useCallback(async () => {
     try {
@@ -202,7 +197,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Load settings from backend
+   * Loads persisted settings from the backend.
    */
   const loadSettings = useCallback(async () => {
     try {
@@ -226,7 +221,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Load recent files
+   * Loads the persisted recent-contact-file list.
    */
   const loadRecentFiles = useCallback(async () => {
     try {
@@ -240,7 +235,7 @@ function App() {
   /**
    * Check Outlook availability on mount
    * Also loads the list of available merge fields
-   * Phase 2: Also loads templates and settings
+   * Also loads templates and settings needed by the initial UI.
    */
   useEffect(() => {
     const checkOutlook = async () => {
@@ -262,7 +257,7 @@ function App() {
     // Get merge fields from backend
     GetMergeFields().then(setMergeFields).catch(console.error);
 
-    // Phase 2: Load templates and settings
+    // Load templates and settings after startup.
     loadTemplates();
     loadSettings();
     loadRecentFiles();
@@ -297,8 +292,8 @@ function App() {
   /**
    * Handle file selection and parsing
    * Opens native file dialog and parses selected CSV/Excel file
-   * Phase 1: Now extracts headers, duplicates, and generates dynamic merge fields
-   * Phase 2: Now adds to recent files list
+   * Parses the selected file, derives canonical merge tokens, and records it in
+   * the recent-file list.
    */
   const handleSelectFile = useCallback(async () => {
     try {
@@ -319,7 +314,7 @@ function App() {
       setHeaders(result.headers || []);
       setDuplicates(result.duplicates || []);
       
-      // Phase 2: Add to recent files
+      // Persist the successfully imported file in the recent-file list.
       try {
         await AddRecentFile(filePath);
         loadRecentFiles();
@@ -327,14 +322,14 @@ function App() {
         console.error('Failed to add to recent files:', err);
       }
       
-      // Phase 1: Select all contacts by default
+      // Select every imported contact by default using stable IDs.
       if (result.contacts && result.contacts.length > 0) {
         setSelectedIds(new Set(result.contacts.map((c) => c.id)));
       } else {
         setSelectedIds(new Set());
       }
       
-      // Phase 1: Generate merge fields from headers
+      // Generate canonical merge tokens from the imported headers.
       if (result.headers && result.headers.length > 0) {
         try {
           const fields = await GetMergeFieldsFromHeaders(result.headers);
@@ -429,7 +424,7 @@ function App() {
   /**
    * Send a test email to a specified address
    * Uses first contact's data for merge preview, or defaults
-   * Phase 3: Now includes CC/BCC in test emails
+   * Sends a test message through the same campaign pipeline, including CC/BCC.
    */
   // Split CC/BCC into static vs template fields based on merge-field presence.
   const splitCcBcc = useCallback(() => {
@@ -591,7 +586,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 1: Handle preview email callback
+   * Renders a preview for the contact selected in the preview modal.
    * Returns rendered subject and body for a specific contact
    */
   const handlePreviewEmail = useCallback(async (contact: Contact): Promise<{ subject: string; body: string } | null> => {
@@ -623,7 +618,7 @@ function App() {
     }
   }, []);
 
-  // Reset handler - Phase 1: Now clears all new state
+  // Reset campaign-specific UI state after a completed or dismissed run.
   const handleReset = useCallback(() => {
     setSendResult(null);
     setProgress(null);
@@ -644,7 +639,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Load a template into the editor
+   * Loads a saved template into the editor.
    */
   const handleLoadTemplate = useCallback((template: WailsEmailTemplate) => {
     setSubject(template.subject);
@@ -655,7 +650,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Save current email as a template
+   * Saves the current composition as a reusable template.
    */
   const handleSaveTemplate = useCallback(async (name: string) => {
     try {
@@ -675,7 +670,7 @@ function App() {
   }, [subject, body, isHTML, loadTemplates]);
 
   /**
-   * Phase 2: Delete a template
+   * Deletes a user-created template and refreshes the list.
    */
   const handleDeleteTemplate = useCallback(async (id: string) => {
     try {
@@ -689,7 +684,7 @@ function App() {
   }, [loadTemplates]);
 
   /**
-   * Phase 2: Save settings
+   * Persists validated settings and updates local UI state.
    */
   const handleSaveSettings = useCallback(async (newSettings: WailsAppSettings) => {
     try {
@@ -710,7 +705,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Clear recent files
+   * Clears the persisted recent-file list.
    */
   const handleClearRecentFiles = useCallback(async () => {
     try {
@@ -722,7 +717,7 @@ function App() {
   }, []);
 
   /**
-   * Phase 2: Open a recent file
+   * Re-imports a selected recent contact file.
    */
   const handleOpenRecentFile = useCallback(async (path: string) => {
     try {
@@ -764,12 +759,12 @@ function App() {
     }
   }, []);
 
-  // Phase 1: Selected contacts count and check
+  // Derive the selected-recipient count and send eligibility.
   const selectedCount = selectedIds.size;
   const canSend = selectedCount > 0 && subject.trim() && body.trim() && !isSending && outlookStatus === 'ok';
 
   /**
-   * Phase 2: Keyboard shortcuts handler
+   * Registers keyboard shortcuts while the application is mounted.
    * Ctrl+O: Open file, Ctrl+S: Save template, Ctrl+,: Settings, Ctrl+D: Dark mode
    */
   useEffect(() => {
@@ -939,7 +934,7 @@ function App() {
 
               {/* Right Column */}
               <div>
-                {/* Phase 2: Template Manager */}
+                {/* Template manager */}
                 <div className="card" style={{ marginBottom: '1rem' }}>
                   <div className="card-header">
                     <h2>Email Templates</h2>
@@ -997,7 +992,7 @@ function App() {
               </div>
               <div className="card-body">
                 <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                  {/* Phase 1: Preview Button */}
+                  {/* Preview button */}
                   <button
                     className="btn btn-secondary btn-lg"
                     onClick={() => setShowPreviewModal(true)}
@@ -1061,7 +1056,7 @@ function App() {
           </>
         )}
 
-        {/* Phase 1: Preview Modal */}
+        {/* Preview modal */}
         <PreviewModal
           isOpen={showPreviewModal}
           onClose={() => setShowPreviewModal(false)}
@@ -1073,7 +1068,7 @@ function App() {
           onPreview={handlePreviewEmail}
         />
 
-        {/* Phase 2: Settings Modal */}
+        {/* Settings modal */}
         <SettingsModal
           isOpen={showSettingsModal}
           onClose={() => setShowSettingsModal(false)}
