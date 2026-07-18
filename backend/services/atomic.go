@@ -22,11 +22,11 @@ func atomicWrite(path string, data []byte, perm os.FileMode) error {
 	defer func() { _ = os.Remove(tmpName) }()
 
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("failed to flush temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
