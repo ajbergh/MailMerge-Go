@@ -18,8 +18,6 @@ type JSONCampaignRepository struct {
 	dir string
 }
 
-// NewJSONCampaignRepository creates a repository rooted at dir (created if
-// needed).
 func NewJSONCampaignRepository(dir string) (*JSONCampaignRepository, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create campaign store: %w", err)
@@ -34,7 +32,37 @@ func (r *JSONCampaignRepository) path(id string) (string, error) {
 	return filepath.Join(r.dir, id+".json"), nil
 }
 
-// Save writes a record atomically.
+// Create writes a new record and fails if the ID already exists.
+func (r *JSONCampaignRepository) Create(rec CampaignRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, err := r.path(rec.ID)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(p); err == nil {
+		return fmt.Errorf("campaign record %q already exists", rec.ID)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return r.writeAtomic(p, rec)
+}
+
+// Update atomically replaces an existing record.
+func (r *JSONCampaignRepository) Update(rec CampaignRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, err := r.path(rec.ID)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(p); err != nil {
+		return err
+	}
+	return r.writeAtomic(p, rec)
+}
+
+// Save is an upsert-compatible persistence method retained for existing callers.
 func (r *JSONCampaignRepository) Save(rec CampaignRecord) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -42,18 +70,44 @@ func (r *JSONCampaignRepository) Save(rec CampaignRecord) error {
 	if err != nil {
 		return err
 	}
+	return r.writeAtomic(p, rec)
+}
+
+func (r *JSONCampaignRepository) writeAtomic(path string, rec CampaignRecord) error {
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(r.dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
-// List returns all records, newest first. Corrupted files are skipped.
+// List returns all records, newest first. Corrupted files are isolated and
+// skipped so one bad record never prevents the rest of campaign history loading.
 func (r *JSONCampaignRepository) List() ([]CampaignRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -76,11 +130,20 @@ func (r *JSONCampaignRepository) List() ([]CampaignRecord, error) {
 		}
 		out = append(out, rec)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		li := out[i].StartedAt
+		lj := out[j].StartedAt
+		if li.IsZero() {
+			li = out[i].CreatedAt
+		}
+		if lj.IsZero() {
+			lj = out[j].CreatedAt
+		}
+		return li.After(lj)
+	})
 	return out, nil
 }
 
-// Get returns a single record by ID.
 func (r *JSONCampaignRepository) Get(id string) (*CampaignRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -99,7 +162,6 @@ func (r *JSONCampaignRepository) Get(id string) (*CampaignRecord, error) {
 	return &rec, nil
 }
 
-// Delete removes a record.
 func (r *JSONCampaignRepository) Delete(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -113,5 +175,4 @@ func (r *JSONCampaignRepository) Delete(id string) error {
 	return nil
 }
 
-// Compile-time check.
 var _ CampaignRepository = (*JSONCampaignRepository)(nil)
