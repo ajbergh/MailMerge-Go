@@ -39,18 +39,18 @@ jobs:
           unformatted=$(gofmt -l $(git ls-files '*.go'))
           test -z "$unformatted" || { echo "$unformatted"; exit 1; }
       - name: Go vet
-        run: go vet ./...
+        run: go vet ./backend/...
       - name: Go race tests and coverage
-        run: go test -race -covermode=atomic -coverprofile=backend-coverage.out ./...
+        run: go test -race -covermode=atomic -coverprofile=backend-coverage.out ./backend/...
       - name: Go lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
-          args: ./...
+          args: ./backend/...
       - name: Go vulnerability scan
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          govulncheck ./backend/...
       - name: Frontend install, test, and build
         working-directory: frontend
         run: |
@@ -104,6 +104,8 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($label)) { $label = "rc-${{ github.run_number }}" }
           $date = (Get-Date -Format "yyyy-MM-dd")
           wails build -platform windows/amd64 -ldflags "-X main.Version=$label -X main.Commit=${{ github.sha }} -X main.BuildDate=$date"
+      - name: Root package tests
+        run: go test .
       - name: Create checksums
         shell: pwsh
         run: |
