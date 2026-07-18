@@ -39,7 +39,7 @@ const (
 func DefaultSendOptions() SendOptions {
 	return SendOptions{
 		DelayBetweenMessages: 500 * time.Millisecond,
-		BatchSize:            0, // 0 = no batching
+		BatchSize:            0,
 		PauseBetweenBatches:  0,
 		ConfirmBeforeSend:    true,
 		ContinueOnError:      true,
@@ -71,19 +71,20 @@ func (o SendOptions) Normalized() SendOptions {
 
 // Campaign is a fully-specified merge job.
 type Campaign struct {
-	Headers         []string         // import column headers, for the merge schema
-	Contacts        []models.Contact // recipients (pre-dedupe)
+	Headers         []string
+	Contacts        []models.Contact
 	SubjectTemplate string
 	BodyTemplate    string
 	IsHTML          bool
-	Attachments     []string // global attachment paths (may contain merge tokens)
-	CCTemplate      string   // rendered per contact (may be static)
-	BCCTemplate     string   // rendered per contact (may be static)
-	ToOverride      string   // if set (test send), used as the To recipient
-	OverrideEmail   bool     // if true, ToOverride also replaces the {{email}} merge value
+	Attachments     []string
+	CCTemplate      string
+	BCCTemplate     string
+	ToOverride      string
+	OverrideEmail   bool
+	DraftOnly       bool
 	Options         SendOptions
 	DuplicatePolicy email.Policy
-	Suppressed      map[string]bool // normalized suppressed addresses
+	Suppressed      map[string]bool
 }
 
 // Schema builds the merge-field schema for this campaign.
@@ -110,6 +111,7 @@ type RenderedMessage struct {
 	HTMLBody    string                  `json:"htmlBody"`
 	TextBody    string                  `json:"textBody"`
 	IsHTML      bool                    `json:"isHTML"`
+	SaveAsDraft bool                    `json:"saveAsDraft"`
 	Attachments []ResolvedAttachment    `json:"attachments"`
 	Diagnostics []mergefield.Diagnostic `json:"diagnostics"`
 }
@@ -152,23 +154,37 @@ type SenderStatus struct {
 	Message   string      `json:"message"`
 }
 
+// SendErrorKind classifies a sender failure so the runner can make a safe
+// campaign-level decision without depending on sender-specific error strings.
+type SendErrorKind string
+
+const (
+	SendErrorRecipient SendErrorKind = "recipient"
+	SendErrorTransient SendErrorKind = "transient"
+	SendErrorFatal     SendErrorKind = "fatal"
+	SendErrorCancelled SendErrorKind = "cancelled"
+)
+
 // SendReceipt is the outcome of a single Send call.
 type SendReceipt struct {
-	Submitted bool   `json:"submitted"`
-	Fatal     bool   `json:"fatal"` // true if the sender is now unusable (e.g. Outlook died)
-	Info      string `json:"info,omitempty"`
-	Err       error  `json:"-"`
-	ErrMsg    string `json:"error,omitempty"`
+	Submitted bool          `json:"submitted"`
+	Kind      SendErrorKind `json:"kind,omitempty"`
+	Fatal     bool          `json:"fatal"`
+	Info      string        `json:"info,omitempty"`
+	Err       error         `json:"-"`
+	ErrMsg    string        `json:"error,omitempty"`
 }
 
 // CampaignState is the terminal state of a campaign run.
 type CampaignState string
 
 const (
-	CampaignCompleted       CampaignState = "completed"
-	CampaignCancelled       CampaignState = "cancelled"
-	CampaignPreflightFailed CampaignState = "preflight_failed"
-	CampaignRuntimeFailed   CampaignState = "runtime_failed"
+	CampaignCompleted             CampaignState = "completed"
+	CampaignCompletedWithFailures CampaignState = "completed_with_failures"
+	CampaignStoppedOnFailure      CampaignState = "stopped_on_failure"
+	CampaignCancelled             CampaignState = "cancelled"
+	CampaignPreflightFailed       CampaignState = "preflight_failed"
+	CampaignRuntimeFailed         CampaignState = "runtime_failed"
 )
 
 // RecipientStatus is the status of a single recipient attempt.
@@ -186,6 +202,7 @@ type Attempt struct {
 	Number    int             `json:"number"`
 	Status    RecipientStatus `json:"status"`
 	Error     string          `json:"error,omitempty"`
+	Trigger   string          `json:"trigger,omitempty"`
 	Timestamp time.Time       `json:"timestamp" ts_type:"string"`
 }
 
@@ -201,13 +218,15 @@ type RecipientResult struct {
 	Attempts     []Attempt       `json:"attempts"`
 }
 
-// lastFailed reports whether the recipient's most recent attempt failed.
 func (r RecipientResult) lastFailed() bool { return r.Status == RecipientFailed }
 
 // CampaignResult is the typed outcome of a campaign run. A fatal preflight or
 // Outlook failure is never reported as an empty successful result.
 type CampaignResult struct {
 	State            CampaignState     `json:"state"`
+	StartedAt        time.Time         `json:"startedAt" ts_type:"string"`
+	FinishedAt       time.Time         `json:"finishedAt" ts_type:"string"`
+	Duration         time.Duration     `json:"duration"`
 	Attempted        int               `json:"attempted"`
 	Submitted        int               `json:"submitted"`
 	Failed           int               `json:"failed"`
