@@ -1,0 +1,493 @@
+diff -ruN base/frontend/src/components/TestSendModal.tsx repo/frontend/src/components/TestSendModal.tsx
+--- base/frontend/src/components/TestSendModal.tsx	1970-01-01 00:00:00.000000000 +0000
++++ repo/frontend/src/components/TestSendModal.tsx	2026-07-18 18:12:47.060300694 +0000
+@@ -0,0 +1,187 @@
++import { useEffect, useMemo, useRef, useState } from 'react';
++import DOMPurify from 'dompurify';
++import { FlaskConical, Save, Send, X } from 'lucide-react';
++import type { Contact } from '../types';
++
++export interface TestSendOptions {
++  testAddress: string;
++  contact: Contact;
++  overwriteEmail: boolean;
++  draftOnly: boolean;
++}
++
++interface TestSendModalProps {
++  isOpen: boolean;
++  contacts: Contact[];
++  subject: string;
++  body: string;
++  isHTML: boolean;
++  isSubmitting: boolean;
++  onClose: () => void;
++  onPreview: (contact: Contact) => Promise<{ subject: string; body: string } | null>;
++  onSubmit: (options: TestSendOptions) => Promise<void>;
++}
++
++export function TestSendModal({
++  isOpen,
++  contacts,
++  subject,
++  body,
++  isHTML,
++  isSubmitting,
++  onClose,
++  onPreview,
++  onSubmit,
++}: TestSendModalProps) {
++  const [testAddress, setTestAddress] = useState('');
++  const [selectedIndex, setSelectedIndex] = useState(0);
++  const [overwriteEmail, setOverwriteEmail] = useState(false);
++  const [draftOnly, setDraftOnly] = useState(false);
++  const [previewSubject, setPreviewSubject] = useState(subject);
++  const [previewBody, setPreviewBody] = useState(body);
++  const [previewLoading, setPreviewLoading] = useState(false);
++  const [validationError, setValidationError] = useState('');
++  const addressRef = useRef<HTMLInputElement>(null);
++
++  const selectedContact = useMemo(
++    () => contacts[selectedIndex] || contacts[0],
++    [contacts, selectedIndex],
++  );
++
++  useEffect(() => {
++    if (!isOpen) return;
++    setSelectedIndex(0);
++    setOverwriteEmail(false);
++    setDraftOnly(false);
++    setValidationError('');
++    window.setTimeout(() => addressRef.current?.focus(), 0);
++  }, [isOpen]);
++
++  useEffect(() => {
++    if (!isOpen || !selectedContact) {
++      setPreviewSubject(subject);
++      setPreviewBody(body);
++      return;
++    }
++    let cancelled = false;
++    setPreviewLoading(true);
++    onPreview(selectedContact)
++      .then((result) => {
++        if (cancelled) return;
++        setPreviewSubject(result?.subject ?? subject);
++        setPreviewBody(result?.body ?? body);
++      })
++      .catch(() => {
++        if (cancelled) return;
++        setPreviewSubject(subject);
++        setPreviewBody(body);
++      })
++      .finally(() => {
++        if (!cancelled) setPreviewLoading(false);
++      });
++    return () => { cancelled = true; };
++  }, [isOpen, selectedContact, subject, body, onPreview]);
++
++  useEffect(() => {
++    if (!isOpen) return;
++    const onKeyDown = (event: KeyboardEvent) => {
++      if (event.key === 'Escape' && !isSubmitting) onClose();
++    };
++    window.addEventListener('keydown', onKeyDown);
++    return () => window.removeEventListener('keydown', onKeyDown);
++  }, [isOpen, isSubmitting, onClose]);
++
++  if (!isOpen) return null;
++
++  const submit = async () => {
++    const address = testAddress.trim();
++    if (!/^\S+@\S+\.\S+$/.test(address)) {
++      setValidationError('Enter a valid test email address.');
++      addressRef.current?.focus();
++      return;
++    }
++    if (!selectedContact) {
++      setValidationError('Import or select a contact to provide merge data.');
++      return;
++    }
++    setValidationError('');
++    await onSubmit({ testAddress: address, contact: selectedContact, overwriteEmail, draftOnly });
++  };
++
++  return (
++    <div className="modal-overlay" role="presentation" onMouseDown={(event) => {
++      if (event.target === event.currentTarget && !isSubmitting) onClose();
++    }}>
++      <section className="modal-content test-send-modal" role="dialog" aria-modal="true" aria-labelledby="test-send-title">
++        <div className="modal-header">
++          <h3 id="test-send-title"><FlaskConical size={18} /> Test message</h3>
++          <button className="modal-close" onClick={onClose} disabled={isSubmitting} aria-label="Close test message dialog">
++            <X size={18} />
++          </button>
++        </div>
++        <div className="modal-body modal-grid">
++          <div className="modal-form-column">
++            <label className="form-label" htmlFor="test-address">Destination</label>
++            <input
++              ref={addressRef}
++              id="test-address"
++              className="form-input"
++              type="email"
++              value={testAddress}
++              onChange={(event) => setTestAddress(event.target.value)}
++              placeholder="you@example.com"
++              autoComplete="email"
++            />
++
++            <label className="form-label" htmlFor="merge-contact">Merge data contact</label>
++            <select
++              id="merge-contact"
++              className="form-input"
++              value={selectedIndex}
++              onChange={(event) => setSelectedIndex(Number(event.target.value))}
++            >
++              {contacts.map((contact, index) => (
++                <option key={contact.id || `${contact.email}-${index}`} value={index}>
++                  {[contact.firstName, contact.lastName].filter(Boolean).join(' ') || contact.email} — {contact.email}
++                </option>
++              ))}
++            </select>
++
++            <label className="setting-checkbox">
++              <input type="checkbox" checked={overwriteEmail} onChange={(event) => setOverwriteEmail(event.target.checked)} />
++              Replace <code>{'{{email}}'}</code> with the test destination
++            </label>
++            <label className="setting-checkbox">
++              <input type="checkbox" checked={draftOnly} onChange={(event) => setDraftOnly(event.target.checked)} />
++              Save the test message to Outlook Drafts instead of sending
++            </label>
++            {validationError && <div className="inline-error" role="alert">{validationError}</div>}
++          </div>
++
++          <div className="test-preview" aria-live="polite">
++            <div className="test-preview-label">Rendered preview</div>
++            {previewLoading ? (
++              <div className="test-preview-loading">Rendering…</div>
++            ) : (
++              <>
++                <div className="test-preview-subject"><strong>Subject:</strong> {previewSubject}</div>
++                {isHTML ? (
++                  <div className="test-preview-body" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(previewBody) }} />
++                ) : (
++                  <pre className="test-preview-body test-preview-plain">{previewBody}</pre>
++                )}
++              </>
++            )}
++          </div>
++        </div>
++        <div className="modal-footer">
++          <button className="btn btn-secondary" onClick={onClose} disabled={isSubmitting}>Cancel</button>
++          <button className="btn btn-success" onClick={submit} disabled={isSubmitting || contacts.length === 0}>
++            {draftOnly ? <Save size={16} /> : <Send size={16} />}
++            {isSubmitting ? 'Working…' : draftOnly ? 'Save test draft' : 'Send test message'}
++          </button>
++        </div>
++      </section>
++    </div>
++  );
++}
++diff -ruN base/frontend/src/components/index.ts repo/frontend/src/components/index.ts
++--- base/frontend/src/components/index.ts	2026-07-18 18:05:30.000000000 +0000
+++++ repo/frontend/src/components/index.ts	2026-07-18 18:12:47.096690705 +0000
++@@ -1,11 +1,3 @@
++-/**
++- * Components Index - Central Export for UI Components
++- * 
++- * This barrel file exports all reusable UI components used in the MailMerge application.
++- * Import components from this file for cleaner imports throughout the application.
++- * 
++- * Example: import { FileUpload, ContactTable, EmailEditor } from './components';
++- */
++ export { FileUpload } from './FileUpload';
++ export { ContactTable } from './ContactTable';
++ export { EmailEditor } from './EmailEditor';
++@@ -15,3 +7,8 @@
++ export { PreviewModal } from './PreviewModal';
++ export { TemplateManager } from './TemplateManager';
++ export { SettingsModal } from './SettingsModal';
+++export { TestSendModal } from './TestSendModal';
+++export type { TestSendOptions } from './TestSendModal';
+++export { PreflightModal } from './PreflightModal';
+++export { CampaignHistoryModal } from './CampaignHistoryModal';
+++export { ErrorBoundary } from './ErrorBoundary';
++diff -ruN base/frontend/src/main.tsx repo/frontend/src/main.tsx
++--- base/frontend/src/main.tsx	2026-07-18 18:05:30.000000000 +0000
+++++ repo/frontend/src/main.tsx	2026-07-18 18:13:09.734774083 +0000
++@@ -11,6 +11,7 @@
++ import React from 'react'
++ import {createRoot} from 'react-dom/client'
++ import App from './App'
+++import {ErrorBoundary} from './components'
++ 
++ // Get the root DOM element
++ const container = document.getElementById('root')
++@@ -21,6 +22,8 @@
++ // Render the application with StrictMode for development checks
++ root.render(
++     <React.StrictMode>
++-        <App/>
+++        <ErrorBoundary>
+++            <App/>
+++        </ErrorBoundary>
++     </React.StrictMode>
++ )
++diff -ruN base/frontend/src/styles/app.css repo/frontend/src/styles/app.css
++--- base/frontend/src/styles/app.css	2026-07-18 18:05:30.000000000 +0000
+++++ repo/frontend/src/styles/app.css	2026-07-18 18:16:20.092412507 +0000
++@@ -1239,3 +1239,253 @@
++   white-space: nowrap;
++   border: 0;
++ }
+++
+++/* Release hardening dialogs and history */
+++.test-send-modal,
+++.preflight-modal {
+++  max-width: 880px;
+++}
+++
+++.history-modal {
+++  max-width: 820px;
+++}
+++
+++.modal-grid {
+++  display: grid;
+++  grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
+++  gap: 1.25rem;
+++}
+++
+++.modal-form-column {
+++  display: flex;
+++  flex-direction: column;
+++  gap: 0.75rem;
+++}
+++
+++.form-label {
+++  color: var(--text-primary);
+++  font-weight: 600;
+++  font-size: 0.875rem;
+++}
+++
+++.inline-error {
+++  padding: 0.65rem 0.75rem;
+++  border: 1px solid var(--danger);
+++  border-radius: var(--border-radius);
+++  background: color-mix(in srgb, var(--danger) 10%, transparent);
+++  color: var(--danger);
+++  font-size: 0.875rem;
+++}
+++
+++.test-preview {
+++  min-height: 260px;
+++  border: 1px solid var(--border-color);
+++  border-radius: var(--border-radius);
+++  background: var(--bg-secondary);
+++  overflow: auto;
+++}
+++
+++.test-preview-label {
+++  padding: 0.65rem 0.85rem;
+++  border-bottom: 1px solid var(--border-color);
+++  color: var(--text-secondary);
+++  font-size: 0.75rem;
+++  font-weight: 700;
+++  text-transform: uppercase;
+++  letter-spacing: 0.04em;
+++}
+++
+++.test-preview-subject,
+++.test-preview-body,
+++.test-preview-loading {
+++  padding: 0.85rem;
+++}
+++
+++.test-preview-subject {
+++  border-bottom: 1px solid var(--border-color);
+++}
+++
+++.test-preview-body {
+++  color: var(--text-primary);
+++  overflow-wrap: anywhere;
+++}
+++
+++.test-preview-plain {
+++  white-space: pre-wrap;
+++  font-family: inherit;
+++  margin: 0;
+++}
+++
+++.preflight-stats {
+++  display: grid;
+++  grid-template-columns: repeat(3, 1fr);
+++  gap: 0.75rem;
+++  margin-bottom: 1rem;
+++}
+++
+++.preflight-stats > div {
+++  display: grid;
+++  justify-items: center;
+++  gap: 0.2rem;
+++  padding: 0.9rem;
+++  border: 1px solid var(--border-color);
+++  border-radius: var(--border-radius);
+++  background: var(--bg-secondary);
+++}
+++
+++.preflight-stats span {
+++  color: var(--text-muted);
+++  font-size: 0.75rem;
+++}
+++
+++.preflight-section {
+++  margin-top: 1rem;
+++  padding: 0.9rem 1rem;
+++  border-radius: var(--border-radius);
+++}
+++
+++.preflight-section h4 {
+++  display: flex;
+++  align-items: center;
+++  gap: 0.4rem;
+++  margin: 0 0 0.5rem;
+++}
+++
+++.preflight-section ul {
+++  margin: 0;
+++  padding-left: 1.25rem;
+++}
+++
+++.preflight-errors {
+++  border: 1px solid var(--danger);
+++  background: color-mix(in srgb, var(--danger) 8%, transparent);
+++}
+++
+++.preflight-warnings {
+++  border: 1px solid var(--warning);
+++  background: color-mix(in srgb, var(--warning) 10%, transparent);
+++}
+++
+++.preflight-ready {
+++  padding: 0.8rem;
+++  border-radius: var(--border-radius);
+++  background: color-mix(in srgb, var(--success) 10%, transparent);
+++  color: var(--success);
+++  font-weight: 600;
+++}
+++
+++.preflight-mode {
+++  display: flex;
+++  gap: 0.75rem;
+++  align-items: flex-start;
+++  margin-top: 1rem;
+++  padding: 0.85rem;
+++  border: 1px solid var(--border-color);
+++  border-radius: var(--border-radius);
+++}
+++
+++.preflight-mode div {
+++  display: flex;
+++  flex-direction: column;
+++  gap: 0.2rem;
+++}
+++
+++.preflight-mode span {
+++  color: var(--text-secondary);
+++  font-size: 0.85rem;
+++}
+++
+++.send-mode-option {
+++  display: flex;
+++  align-items: center;
+++  gap: 0.5rem;
+++  margin-top: 1rem;
+++  padding: 0.8rem;
+++  border: 1px solid var(--border-color);
+++  border-radius: var(--border-radius);
+++  cursor: pointer;
+++}
+++
+++.history-actions,
+++.history-row,
+++.history-row-actions {
+++  display: flex;
+++  align-items: center;
+++}
+++
+++.history-actions {
+++  justify-content: space-between;
+++  margin-bottom: 1rem;
+++}
+++
+++.history-list {
+++  display: flex;
+++  flex-direction: column;
+++  gap: 0.65rem;
+++}
+++
+++.history-row {
+++  justify-content: space-between;
+++  gap: 1rem;
+++  padding: 0.85rem;
+++  border: 1px solid var(--border-color);
+++  border-radius: var(--border-radius);
+++  background: var(--bg-secondary);
+++}
+++
+++.history-row-main {
+++  display: flex;
+++  flex-direction: column;
+++  min-width: 0;
+++  gap: 0.2rem;
+++}
+++
+++.history-row-main strong {
+++  overflow: hidden;
+++  text-overflow: ellipsis;
+++  white-space: nowrap;
+++}
+++
+++.history-row-main span {
+++  color: var(--text-secondary);
+++  font-size: 0.78rem;
+++  text-transform: capitalize;
+++}
+++
+++.history-row-actions {
+++  gap: 0.5rem;
+++  flex-shrink: 0;
+++}
+++
+++.fatal-error {
+++  min-height: 100vh;
+++  display: grid;
+++  place-content: center;
+++  justify-items: center;
+++  gap: 0.8rem;
+++  padding: 2rem;
+++  text-align: center;
+++  background: var(--bg-primary);
+++  color: var(--text-primary);
+++}
+++
+++@media (max-width: 760px) {
+++  .modal-grid,
+++  .preflight-stats {
+++    grid-template-columns: 1fr;
+++  }
+++
+++  .history-row {
+++    align-items: flex-start;
+++    flex-direction: column;
+++  }
+++}
+++
+++.history-clear-confirm {
+++  display: flex;
+++  align-items: center;
+++  gap: 0.45rem;
+++  color: var(--danger);
+++  font-size: 0.8rem;
+++  font-weight: 600;
+++}
