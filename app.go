@@ -47,6 +47,7 @@ type App struct {
 	settingsService *services.SettingsService    // Handles app settings persistence
 	suppression     *services.SuppressionService // Suppression / unsubscribe list
 	history         storage.CampaignRepository   // Campaign run history (JSON-backed)
+	emitProgress    func(models.ProgressUpdate)  // Set only from the Wails lifecycle context
 
 	mu             sync.Mutex         // guards cancel and lastResult
 	cancel         context.CancelFunc // cancels the in-flight campaign, if any
@@ -253,6 +254,9 @@ func cloneContacts(in []models.Contact) []models.Contact {
 // which is used for runtime operations like dialogs and events.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.emitProgress = func(update models.ProgressUpdate) {
+		runtime.EventsEmit(ctx, "email:progress", update)
+	}
 }
 
 // shutdown releases the Outlook COM worker cleanly.
@@ -567,7 +571,11 @@ func (a *App) CancelCampaign() {
 
 // beginRun creates a cancelable context for a campaign and stores its cancel func.
 func (a *App) beginRun() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(a.ctx)
+	base := a.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
 	a.mu.Lock()
 	a.cancel = cancel
 	a.mu.Unlock()
@@ -624,14 +632,16 @@ func (a *App) duplicatePolicy() email.Policy {
 	return email.DefaultPolicy
 }
 
-// progressSink forwards campaign progress to the frontend's "email:progress"
-// event channel (unchanged payload shape).
+// progressSink forwards campaign progress through an emitter created only
+// from the Wails lifecycle context. Headless execution and tests intentionally
+// operate without an emitter.
 func (a *App) progressSink() campaign.ProgressSink {
 	return campaign.ProgressFunc(func(p campaign.Progress) {
-		if a.ctx == nil {
+		emit := a.emitProgress
+		if emit == nil {
 			return
 		}
-		runtime.EventsEmit(a.ctx, "email:progress", models.ProgressUpdate{
+		emit(models.ProgressUpdate{
 			Current:   p.Current,
 			Total:     p.Total,
 			Status:    p.Status,
