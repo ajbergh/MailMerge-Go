@@ -223,6 +223,9 @@ func (r RecipientResult) lastFailed() bool { return r.Status == RecipientFailed 
 // CampaignResult is the typed outcome of a campaign run. A fatal preflight or
 // Outlook failure is never reported as an empty successful result.
 type CampaignResult struct {
+	CampaignID       string            `json:"campaignId,omitempty"`
+	ParentCampaignID string            `json:"parentCampaignId,omitempty"`
+	RunNumber        int               `json:"runNumber,omitempty"`
 	State            CampaignState     `json:"state"`
 	StartedAt        time.Time         `json:"startedAt" ts_type:"string"`
 	FinishedAt       time.Time         `json:"finishedAt" ts_type:"string"`

@@ -14,8 +14,16 @@ export function CheckOutlookInstalled() {
   return window['go']['main']['App']['CheckOutlookInstalled']();
 }
 
+export function ClearCampaignHistory() {
+  return window['go']['main']['App']['ClearCampaignHistory']();
+}
+
 export function ClearRecentFiles() {
   return window['go']['main']['App']['ClearRecentFiles']();
+}
+
+export function DeleteCampaign(arg1) {
+  return window['go']['main']['App']['DeleteCampaign'](arg1);
 }
 
 export function DeleteTemplate(arg1) {
@@ -32,6 +40,10 @@ export function GetAllTemplates() {
 
 export function GetAppInfo() {
   return window['go']['main']['App']['GetAppInfo']();
+}
+
+export function GetCampaign(arg1) {
+  return window['go']['main']['App']['GetCampaign'](arg1);
 }
 
 export function GetCampaignHistory() {
@@ -88,6 +100,10 @@ export function PreviewMerge(arg1, arg2, arg3, arg4, arg5) {
 
 export function PreviewMergeForContact(arg1, arg2, arg3) {
   return window['go']['main']['App']['PreviewMergeForContact'](arg1, arg2, arg3);
+}
+
+export function RetryCampaign(arg1) {
+  return window['go']['main']['App']['RetryCampaign'](arg1);
 }
 
 export function RetryFailed(arg1) {

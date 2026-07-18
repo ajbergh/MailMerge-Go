@@ -77,6 +77,7 @@ type EmailRequest struct {
 	BCC             string    `json:"bcc,omitempty"`         // Static BCC addresses (comma-separated)
 	CCTemplate      string    `json:"ccTemplate,omitempty"`  // CC with merge fields support
 	BCCTemplate     string    `json:"bccTemplate,omitempty"` // BCC with merge fields support
+	DraftOnly       bool      `json:"draftOnly,omitempty"`   // Save to Outlook Drafts instead of sending
 }
 
 // TestEmailRequest represents a request to send a single test email.
@@ -102,6 +103,7 @@ type TestEmailRequest struct {
 	// OverwriteEmail, when true, makes TestAddress also replace the {{email}}
 	// merge value; otherwise {{email}} keeps the contact's own address.
 	OverwriteEmail bool `json:"overwriteEmail"`
+	DraftOnly      bool `json:"draftOnly,omitempty"` // Save to Outlook Drafts instead of sending
 }
 
 // ProgressUpdate represents a real-time progress update during bulk sending.

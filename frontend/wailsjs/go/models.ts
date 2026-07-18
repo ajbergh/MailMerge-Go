@@ -4,6 +4,7 @@ export namespace campaign {
 	    number: number;
 	    status: string;
 	    error?: string;
+	    trigger?: string;
 	    timestamp: string;
 	
 	    static createFrom(source: any = {}) {
@@ -15,6 +16,7 @@ export namespace campaign {
 	        this.number = source["number"];
 	        this.status = source["status"];
 	        this.error = source["error"];
+	        this.trigger = source["trigger"];
 	        this.timestamp = source["timestamp"];
 	    }
 	}
@@ -174,8 +176,34 @@ export namespace campaign {
 		    return a;
 		}
 	}
+	export class SendOptions {
+	    delayBetweenMessages: number;
+	    batchSize: number;
+	    pauseBetweenBatches: number;
+	    confirmBeforeSend: boolean;
+	    continueOnError: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new SendOptions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.delayBetweenMessages = source["delayBetweenMessages"];
+	        this.batchSize = source["batchSize"];
+	        this.pauseBetweenBatches = source["pauseBetweenBatches"];
+	        this.confirmBeforeSend = source["confirmBeforeSend"];
+	        this.continueOnError = source["continueOnError"];
+	    }
+	}
 	export class CampaignResult {
+	    campaignId?: string;
+	    parentCampaignId?: string;
+	    runNumber?: number;
 	    state: string;
+	    startedAt: string;
+	    finishedAt: string;
+	    duration: number;
 	    attempted: number;
 	    submitted: number;
 	    failed: number;
@@ -191,7 +219,13 @@ export namespace campaign {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.campaignId = source["campaignId"];
+	        this.parentCampaignId = source["parentCampaignId"];
+	        this.runNumber = source["runNumber"];
 	        this.state = source["state"];
+	        this.startedAt = source["startedAt"];
+	        this.finishedAt = source["finishedAt"];
+	        this.duration = source["duration"];
 	        this.attempted = source["attempted"];
 	        this.submitted = source["submitted"];
 	        this.failed = source["failed"];
@@ -328,6 +362,7 @@ export namespace models {
 	    bcc?: string;
 	    ccTemplate?: string;
 	    bccTemplate?: string;
+	    draftOnly?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EmailRequest(source);
@@ -344,6 +379,7 @@ export namespace models {
 	        this.bcc = source["bcc"];
 	        this.ccTemplate = source["ccTemplate"];
 	        this.bccTemplate = source["bccTemplate"];
+	        this.draftOnly = source["draftOnly"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -460,6 +496,7 @@ export namespace models {
 	    sampleLastName: string;
 	    contact: Contact;
 	    overwriteEmail: boolean;
+	    draftOnly?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new TestEmailRequest(source);
@@ -480,6 +517,7 @@ export namespace models {
 	        this.sampleLastName = source["sampleLastName"];
 	        this.contact = this.convertValues(source["contact"], Contact);
 	        this.overwriteEmail = source["overwriteEmail"];
+	        this.draftOnly = source["draftOnly"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -526,10 +564,25 @@ export namespace storage {
 	
 	export class CampaignRecord {
 	    id: string;
+	    parentCampaignId?: string;
+	    runNumber: number;
+	    createdAt: string;
 	    startedAt: string;
 	    finishedAt: string;
+	    duration: number;
 	    subject: string;
+	    subjectTemplate: string;
+	    bodyTemplate: string;
 	    isHTML: boolean;
+	    draftOnly?: boolean;
+	    headers?: string[];
+	    contacts?: models.Contact[];
+	    attachments?: string[];
+	    ccTemplate?: string;
+	    bccTemplate?: string;
+	    duplicatePolicy: string;
+	    sendOptions: campaign.SendOptions;
+	    senderType: string;
 	    recipientCount: number;
 	    state: string;
 	    result: campaign.CampaignResult;
@@ -541,26 +594,36 @@ export namespace storage {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.parentCampaignId = source["parentCampaignId"];
+	        this.runNumber = source["runNumber"];
+	        this.createdAt = source["createdAt"];
 	        this.startedAt = source["startedAt"];
 	        this.finishedAt = source["finishedAt"];
+	        this.duration = source["duration"];
 	        this.subject = source["subject"];
+	        this.subjectTemplate = source["subjectTemplate"];
+	        this.bodyTemplate = source["bodyTemplate"];
 	        this.isHTML = source["isHTML"];
+	        this.draftOnly = source["draftOnly"];
+	        this.headers = source["headers"];
+	        this.contacts = this.convertValues(source["contacts"], models.Contact);
+	        this.attachments = source["attachments"];
+	        this.ccTemplate = source["ccTemplate"];
+	        this.bccTemplate = source["bccTemplate"];
+	        this.duplicatePolicy = source["duplicatePolicy"];
+	        this.sendOptions = this.convertValues(source["sendOptions"], campaign.SendOptions);
+	        this.senderType = source["senderType"];
 	        this.recipientCount = source["recipientCount"];
 	        this.state = source["state"];
 	        this.result = this.convertValues(source["result"], campaign.CampaignResult);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
+		    if (!a) return a;
+		    if (a.slice && a.map) return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    if ("object" === typeof a) {
 		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
+		            for (const key of Object.keys(a)) a[key] = new classs(a[key]);
 		            return a;
 		        }
 		        return new classs(a);
