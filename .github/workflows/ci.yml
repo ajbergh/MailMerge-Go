@@ -239,37 +239,77 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }}
-      - name: Apply assertion-checked source change
+      - name: Apply idempotent source change
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           app_path = Path('app.go')
           text = app_path.read_text()
-          replacements = [
-              (
-                  '\thistory         storage.CampaignRepository   // Campaign run history (JSON-backed)\n\n\tmu             sync.Mutex',
-                  '\thistory         storage.CampaignRepository   // Campaign run history (JSON-backed)\n\temitProgress    func(models.ProgressUpdate)    // Set only from the Wails lifecycle context\n\n\tmu             sync.Mutex',
-              ),
-              (
-                  'func (a *App) startup(ctx context.Context) {\n\ta.ctx = ctx\n}',
-                  'func (a *App) startup(ctx context.Context) {\n\ta.ctx = ctx\n\ta.emitProgress = func(update models.ProgressUpdate) {\n\t\truntime.EventsEmit(ctx, "email:progress", update)\n\t}\n}',
-              ),
-              (
-                  'func (a *App) beginRun() (context.Context, context.CancelFunc) {\n\tctx, cancel := context.WithCancel(a.ctx)',
-                  'func (a *App) beginRun() (context.Context, context.CancelFunc) {\n\tbase := a.ctx\n\tif base == nil {\n\t\tbase = context.Background()\n\t}\n\tctx, cancel := context.WithCancel(base)',
-              ),
-              (
-                  '// progressSink forwards campaign progress to the frontend\'s "email:progress"\n// event channel (unchanged payload shape).\nfunc (a *App) progressSink() campaign.ProgressSink {\n\treturn campaign.ProgressFunc(func(p campaign.Progress) {\n\t\tif a.ctx == nil {\n\t\t\treturn\n\t\t}\n\t\truntime.EventsEmit(a.ctx, "email:progress", models.ProgressUpdate{\n\t\t\tCurrent:   p.Current,\n\t\t\tTotal:     p.Total,\n\t\t\tStatus:    p.Status,\n\t\t\tEmail:     p.Email,\n\t\t\tMessage:   p.Message,\n\t\t\tTimestamp: time.Now().Format(time.RFC3339),\n\t\t})\n\t})\n}',
-                  '// progressSink forwards campaign progress through an emitter created only\n// from the Wails lifecycle context. Headless execution and tests intentionally\n// operate without an emitter.\nfunc (a *App) progressSink() campaign.ProgressSink {\n\treturn campaign.ProgressFunc(func(p campaign.Progress) {\n\t\temit := a.emitProgress\n\t\tif emit == nil {\n\t\t\treturn\n\t\t}\n\t\temit(models.ProgressUpdate{\n\t\t\tCurrent:   p.Current,\n\t\t\tTotal:     p.Total,\n\t\t\tStatus:    p.Status,\n\t\t\tEmail:     p.Email,\n\t\t\tMessage:   p.Message,\n\t\t\tTimestamp: time.Now().Format(time.RFC3339),\n\t\t})\n\t})\n}',
-              ),
-          ]
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'expected exactly one source form, found {count}: {old[:100]!r}')
-              text = text.replace(old, new, 1)
+
+          if 'emitProgress    func(models.ProgressUpdate)' not in text:
+              history_line = '\thistory         storage.CampaignRepository   // Campaign run history (JSON-backed)'
+              if history_line not in text:
+                  raise SystemExit('campaign history field not found')
+              text = text.replace(
+                  history_line,
+                  history_line + '\n\temitProgress    func(models.ProgressUpdate) // Set only from the Wails lifecycle context',
+                  1,
+              )
+
+          startup_pattern = re.compile(r'func \(a \*App\) startup\(ctx context\.Context\) \{\n\s*a\.ctx = ctx\n\}')
+          startup_replacement = '''func (a *App) startup(ctx context.Context) {
+          a.ctx = ctx
+          a.emitProgress = func(update models.ProgressUpdate) {
+          runtime.EventsEmit(ctx, "email:progress", update)
+          }
+          }'''.replace('\n          ', '\n\t')
+          text, startup_count = startup_pattern.subn(startup_replacement, text, count=1)
+          if startup_count != 1 and 'a.emitProgress = func(update models.ProgressUpdate)' not in text:
+              raise SystemExit(f'startup hook replacement count: {startup_count}')
+
+          begin_pattern = re.compile(r'func \(a \*App\) beginRun\(\) \(context\.Context, context\.CancelFunc\) \{\n\s*ctx, cancel := context\.WithCancel\(a\.ctx\)')
+          begin_replacement = '''func (a *App) beginRun() (context.Context, context.CancelFunc) {
+          base := a.ctx
+          if base == nil {
+          base = context.Background()
+          }
+          ctx, cancel := context.WithCancel(base)'''.replace('\n          ', '\n\t')
+          text, begin_count = begin_pattern.subn(begin_replacement, text, count=1)
+          if begin_count != 1 and 'base = context.Background()' not in text:
+              raise SystemExit(f'beginRun replacement count: {begin_count}')
+
+          progress_start = text.find('func (a *App) progressSink() campaign.ProgressSink {')
+          helpers_marker = text.find('// ---- campaign helpers ----', progress_start)
+          if progress_start < 0 or helpers_marker < 0:
+              raise SystemExit('progressSink method boundaries not found')
+          comment_start = text.rfind('// progressSink', 0, progress_start)
+          if comment_start < 0:
+              comment_start = progress_start
+          new_progress = '''// progressSink forwards campaign progress through an emitter created only
+          // from the Wails lifecycle context. Headless execution and tests intentionally
+          // operate without an emitter.
+          func (a *App) progressSink() campaign.ProgressSink {
+          return campaign.ProgressFunc(func(p campaign.Progress) {
+          emit := a.emitProgress
+          if emit == nil {
+          return
+          }
+          emit(models.ProgressUpdate{
+          Current:   p.Current,
+          Total:     p.Total,
+          Status:    p.Status,
+          Email:     p.Email,
+          Message:   p.Message,
+          Timestamp: time.Now().Format(time.RFC3339),
+          })
+          })
+          }
+
+          '''.replace('\n          ', '\n\t')
+          text = text[:comment_start] + new_progress + text[helpers_marker:]
           app_path.write_text(text)
 
           ci_path = Path('.github/workflows/ci.yml')
