@@ -9,35 +9,40 @@ Draft PR: #2 — Post-PR full remediation: stabilization and campaign safety
 ## Status legend
 
 - **COMPLETE** — implemented and validated by the applicable automated or platform check.
-- **IN PROGRESS** — implementation is present but additional validation or scope remains.
+- **IN PROGRESS** — implementation is present but additional product scope or manual validation remains.
 - **DEFERRED** — intentionally assigned to a later release milestone.
 
 ## Executive status
 
-The release has moved from a broken baseline to a substantially hardened release candidate. The frontend lockfile is synchronized; frontend installation, tests, and coverage run; Go race tests run with coverage; dependency scans are blocking; CycloneDX SBOMs are generated; and a Windows Wails build is part of every CI run.
+The automated release baseline is green. The permanent CI workflow now passes all five required jobs:
 
-Campaign execution now persists immutable run snapshots. Failed recipients can be retried by persisted campaign ID after an application restart, and each retry is stored as a distinct child run with parent linkage and an incremented run number. The frontend now exposes draft-only delivery, structured preflight review, an accessible test-send workflow, campaign history, retry/delete/clear controls, Windows-aware attachment deduplication, and an error boundary.
+1. Go formatting, vet, race tests with coverage, and golangci-lint.
+2. Frontend dependency installation, tests with coverage, and production build.
+3. Reachable Go vulnerability scanning and production npm audit.
+4. Go and frontend CycloneDX SBOM generation.
+5. Windows Wails compilation, root-package persistence/retry tests, and executable artifact upload.
 
-The PR remains a draft until the current post-integration CI run confirms the frontend production build, Windows build/root tests, and golangci-lint against the final source.
+Campaign execution now persists immutable run snapshots. Failed recipients can be retried by persisted campaign ID after an application restart, and every retry is stored as a distinct child run with parent linkage and an incremented run number. The frontend exposes draft-only delivery, structured preflight review, an accessible test-send workflow, campaign history, retry/delete/clear controls, Windows-aware attachment deduplication, and an application error boundary.
+
+The PR remains a draft only because the manual Windows/classic-Outlook compatibility checklist has not yet been completed on a clean target system. There are no known automated build, lint, dependency, security, SBOM, frontend, persistence, or Windows compilation blockers.
 
 ## Phase 0 — Stabilize Main and Fix CI
 
-**Status: IN PROGRESS — final integrated CI validation pending**
-
-Completed:
+**Status: COMPLETE**
 
 - Pinned Node 22.23.1 consistently across CI and release workflows.
 - Synchronized `frontend/package-lock.json`; `npm ci` succeeds.
 - Migrated golangci-lint to the v2 configuration and action line.
-- `gofmt`, `go vet`, and Go race tests execute as required checks.
-- `govulncheck` and production `npm audit` are blocking checks and currently pass.
+- `gofmt`, `go vet`, Go race tests, and golangci-lint pass.
+- Frontend tests, coverage, and the TypeScript/Vite production build pass.
+- `govulncheck` and production `npm audit` are blocking checks and pass.
+- Windows Wails compilation and root-package tests pass.
 - Removed all temporary write-enabled remediation jobs and staging files.
+- Recommended branch-protection checks are documented in `dev_docs/release-checklist.md`.
 
-Remaining:
+Operational item outside source control:
 
-- Confirm golangci-lint is green on the final integrated source.
-- Confirm the final frontend production build and Windows package/root tests are green.
-- Configure the documented branch-protection required checks in repository settings.
+- Configure `main` branch protection to require the five permanent CI jobs.
 
 ## Phase 1 — Campaign Reliability and Retry Safety
 
@@ -51,10 +56,11 @@ Remaining:
 - Campaign results return durable campaign IDs, parent IDs, and run numbers.
 - Retry by persisted campaign ID works after application restart.
 - Each retry is persisted as a separate linked history record.
+- Headless campaign execution no longer requires a Wails runtime context.
 
 ## Phase 2 — Outlook COM Reliability
 
-**Status: IN PROGRESS**
+**Status: IN PROGRESS — manual compatibility matrix remains**
 
 Completed:
 
@@ -63,10 +69,12 @@ Completed:
 - Fatal sender failures terminate campaigns safely.
 - COM worker shutdown waits for worker completion.
 - Unsupported multiple-account/shared-mailbox capabilities are no longer advertised.
-- Draft-only delivery is implemented through Outlook `MailItem.Save` and is exposed in test and campaign UI.
+- Draft-only delivery is implemented through Outlook `MailItem.Save` and exposed in test and campaign UI.
+- Wails progress emission is isolated from campaign execution and is installed only by the Wails lifecycle context.
 
-Remaining:
+Remaining manual or future work:
 
+- Execute the clean-Windows/classic-Outlook matrix in `dev_docs/release-checklist.md`.
 - Expand Windows-specific tests for `S_FALSE`, unexpected HRESULTs, close-during-command, and post-close submission.
 - Sender-account selection remains deferred; its capability remains false.
 
@@ -80,7 +88,7 @@ Remaining:
 - Repository create/update semantics are explicit.
 - Legacy records are normalized on load with lineage and timing backfill.
 - Corrupt records are isolated during list operations.
-- Persistence tests cover create, update, list, reload, delete, duplicate/missing semantics, corrupt records, legacy normalization, traversal rejection, and temporary-file cleanup.
+- Persistence tests cover create, update, list, reload, delete, duplicate/missing semantics, corrupt records, legacy normalization, traversal rejection, temporary-file cleanup, draft-mode round trip, immutable snapshots, and retry after restart.
 - Campaign-history APIs support detail retrieval, retry, delete-one, and clear-all.
 
 ## Phase 4 — Product Workflow Completion
@@ -94,7 +102,7 @@ Completed:
 - Campaign-history review, retry, delete-one, and two-step clear-all workflow.
 - Draft-only campaign mode.
 
-Remaining:
+Remaining product enhancements:
 
 - Manual duplicate-resolution UI.
 - Suppression management UI.
@@ -112,6 +120,7 @@ Completed:
 - Fixed stale captured settings during theme updates.
 - Added typed Wails bindings for persisted campaign operations.
 - Split test-send, preflight, history, and error-boundary concerns into dedicated components.
+- Added durable frontend coverage and compiler-diagnostic artifacts.
 
 Remaining:
 
@@ -130,14 +139,16 @@ Completed:
 
 Remaining:
 
-- Validate packaged-app native file-drop behavior.
+- Validate packaged-app native file-drop behavior manually.
 - Add personalized-path preview and unique-path cache regression coverage.
 
 ## Phase 7 — Import Scalability
 
 **Status: IN PROGRESS**
 
-Existing import limits and stable contact IDs remain in place.
+Completed foundation:
+
+- Existing import limits, stable contact IDs, BOM handling, duplicate-header detection, and blank-row handling remain enforced.
 
 Remaining:
 
@@ -151,11 +162,13 @@ Remaining:
 
 Completed:
 
-- Reachable Go vulnerability scanning is blocking and currently passes.
-- Production npm high-severity audit is blocking and currently passes.
+- Reachable Go vulnerability scanning is blocking and passes.
+- Production npm high-severity audit is blocking and passes.
 - Existing sanitizer tests cover script and JavaScript URL payloads.
 - History delete-one and clear-all controls are available.
-- Release and CI generate dependency SBOM evidence.
+- CI and tagged releases generate dependency SBOM evidence.
+- Tagged releases generate a manifest and comprehensive SHA-256 checksums.
+- Optional Authenticode signing hooks are available through repository secrets; no certificate material is committed.
 
 Remaining:
 
@@ -166,16 +179,17 @@ Remaining:
 
 ## Phase 9 — Tests
 
-**Status: IN PROGRESS**
+**Status: IN PROGRESS — release-critical baseline complete**
 
 Completed:
 
 - Backend race tests generate coverage evidence.
 - Frontend Vitest runs generate coverage evidence.
-- Added retry fresh-preflight, timing/state, cancellation, draft mode, attachment cache, persistence, retry-after-restart, and immutable-snapshot coverage.
-- Windows CI now compiles/tests the root Wails-bound package after building.
+- Added retry fresh-preflight, timing/state, cancellation, draft mode, attachment cache, persistence, retry-after-restart, immutable-snapshot, draft persistence, and headless execution coverage.
+- Windows CI compiles/tests the root Wails-bound package after building.
+- All permanent automated test, lint, build, and security gates pass.
 
-Remaining:
+Remaining enhancements:
 
 - Outlook COM edge-case coverage on Windows.
 - Additional frontend interaction tests for the new dialogs/history workflow.
@@ -189,9 +203,10 @@ Remaining:
 - CI generates Go and frontend CycloneDX SBOMs.
 - Security scans are real gates.
 - The Windows executable is built and retained as an artifact.
-- A manual Release Candidate workflow validates tests, scans, coverage, SBOMs, and a Windows package without publishing a release.
+- Compiler, linter, vulnerability, Wails-build, and root-test diagnostics are retained when useful.
+- A manual Release Candidate workflow validates tests, scans, coverage, SBOMs, root-package tests, and a Windows package without publishing a release.
 - Tagged releases generate SBOMs, release metadata, comprehensive checksums, and optional Authenticode signing through secrets.
-- The release checklist documents go/no-go validation and recommended required checks.
+- The release checklist documents go/no-go validation, rollback, and recommended required checks.
 
 Operational item outside source control:
 
@@ -211,34 +226,34 @@ Completed:
 
 - Maintained this phase-by-phase status document.
 - Added a release go/no-go checklist and branch-protection guidance.
-- Release workflows now describe generated evidence through their artifact names and manifests.
+- Added release-evidence documentation.
+- Updated `CHANGELOG.md` and `CONTRIBUTING.md` for the hardened release process.
+- Release workflows describe generated evidence through artifact names and manifests.
 
 Remaining:
 
-- Complete final README/CHANGELOG wording after integrated CI is green.
-- Expand end-user campaign history, draft mode, and privacy documentation.
+- Expand end-user documentation for campaign history, draft mode, retention, and privacy controls.
 
-## Current validation evidence
+## Current automated validation evidence
 
-Confirmed on the integrated branch before the final nullability correction:
+The permanent CI workflow is green for the integrated application source:
 
 - `npm ci`: passed.
 - Frontend tests and coverage: passed.
+- Frontend TypeScript/Vite production build: passed.
 - `gofmt`: passed.
 - `go vet ./backend/...`: passed.
 - Go race tests and backend coverage: passed.
+- golangci-lint v2: passed.
 - `govulncheck ./backend/...`: passed.
 - `npm audit --omit=dev --audit-level=high`: passed.
 - Go/frontend CycloneDX SBOM generation: passed.
-
-The final CI run is revalidating:
-
-- Frontend TypeScript/Vite production build after the retry nullability correction.
-- golangci-lint v2 findings against the integrated source.
-- Windows Wails build and root-package persistence/retry tests.
+- Windows Wails build: passed.
+- Windows root-package persistence, restart-safe retry, and headless-context tests: passed.
+- Windows executable artifact upload: passed.
 
 ## Release readiness
 
-**CONDITIONALLY NOT READY UNTIL FINAL CI IS GREEN**
+**AUTOMATED RELEASE GATES COMPLETE — MANUAL WINDOWS/OUTLOOK VALIDATION REQUIRED**
 
-There are no longer known dependency-install or security-scan blockers. The remaining release gate is confirmation that every final integrated required check passes. The PR should remain draft until that evidence is available and the Windows/Outlook manual checklist is completed.
+The codebase has no known automated build, test, lint, dependency, security, SBOM, frontend, persistence, or Windows packaging blocker. Before publishing a version tag, execute `dev_docs/release-checklist.md` on a clean supported Windows system with classic Outlook and a configured mail account. PR #2 should remain draft until that manual compatibility and smoke-test evidence is recorded.
