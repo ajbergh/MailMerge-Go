@@ -1,0 +1,95 @@
+--- a/backend/services/atomic.go
++++ b/backend/services/atomic.go
+@@ -22,11 +22,11 @@
+ 	defer func() { _ = os.Remove(tmpName) }()
+ 
+ 	if _, err := tmp.Write(data); err != nil {
+-		tmp.Close()
++		_ = tmp.Close()
+ 		return fmt.Errorf("failed to write temp file: %w", err)
+ 	}
+ 	if err := tmp.Sync(); err != nil {
+-		tmp.Close()
++		_ = tmp.Close()
+ 		return fmt.Errorf("failed to flush temp file: %w", err)
+ 	}
+ 	if err := tmp.Close(); err != nil {
+--- a/backend/services/file_service.go
++++ b/backend/services/file_service.go
+@@ -98,7 +98,7 @@
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to open CSV file: %w", err)
+ 	}
+-	defer file.Close()
++	defer func() { _ = file.Close() }()
+ 
+ 	reader := csv.NewReader(file)
+@@ -201,12 +201,12 @@
+ 	if err != nil {
+ 		return nil, fmt.Errorf("failed to open Excel file: %w", err)
+ 	}
+-	defer f.Close()
++	defer func() { _ = f.Close() }()
+ 
+ 	// Get the first sheet
+ 	sheets := f.GetSheetList()
+ 	if len(sheets) == 0 {
+-		return nil, fmt.Errorf("Excel file contains no sheets")
++		return nil, fmt.Errorf("excel file contains no sheets")
+ 	}
+@@ -215,7 +215,7 @@
+ 	}
+ 
+ 	if len(rows) == 0 {
+-		return nil, fmt.Errorf("Excel sheet is empty")
++		return nil, fmt.Errorf("excel sheet is empty")
+ 	}
+@@ -279,13 +279,13 @@
+ 			normalized = strings.ReplaceAll(normalized, sep, "")
+ 		}
+ 
+-		// Handle various column name formats
+-		switch {
+-		case normalized == "firstname" || normalized == "fname" || normalized == "givenname":
++		// Handle various column name formats.
++		switch normalized {
++		case "firstname", "fname", "givenname":
+ 			indices["firstname"] = i
+-		case normalized == "lastname" || normalized == "lname" || normalized == "surname":
++		case "lastname", "lname", "surname":
+ 			indices["lastname"] = i
+-		case normalized == "email" || normalized == "emailaddress" || normalized == "mail":
++		case "email", "emailaddress", "mail":
+ 			indices["email"] = i
+ 		}
+--- a/backend/services/services_test.go
++++ b/backend/services/services_test.go
+@@ -86,7 +86,7 @@
+ 		t.Errorf("GetRecentFiles should prune missing files, got %v", got)
+ 	}
+ 	// Mutating the returned slice must not affect internal state.
+-	got = append(got, "injected")
++	got[0] = "injected"
+ 	if len(ss.GetRecentFiles()) != 1 {
+ 		t.Error("returned slice shares internal backing storage")
+ 	}
+--- a/backend/graph/doc.go
++++ b/backend/graph/doc.go
+@@ -23,7 +23,7 @@
+ )
+ 
+ // ErrNotImplemented is returned by the stub sender until Graph support lands.
+-var ErrNotImplemented = errors.New("Microsoft Graph sender is not implemented yet")
++var ErrNotImplemented = errors.New("microsoft Graph sender is not implemented yet")
+--- a/backend/campaign/runner.go
++++ b/backend/campaign/runner.go
+@@ -26,11 +26,6 @@
+ // WithPreflighter sets the preflighter (default NewPreflighter).
+ func WithPreflighter(p *Preflighter) RunnerOption { return func(r *Runner) { r.preflight = p } }
+ 
+-// withStat overrides filesystem stat (tests).
+-func withStat(fn func(string) (os.FileInfo, error)) RunnerOption {
+-	return func(r *Runner) { r.stat = fn }
+-}
+-
+ // NewRunner builds a Runner.
