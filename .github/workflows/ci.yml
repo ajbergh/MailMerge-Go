@@ -126,7 +126,18 @@ jobs:
         working-directory: frontend
         run: npm ci
       - name: Build (unsigned)
-        run: wails build -platform windows/amd64 -skipbindings -ldflags "-X main.Version=ci-${{ github.sha }} -X main.Commit=${{ github.sha }}"
+        shell: pwsh
+        run: |
+          wails build -platform windows/amd64 -skipbindings -ldflags "-X main.Version=ci-${{ github.sha }} -X main.Commit=${{ github.sha }}" 2>&1 | Tee-Object -FilePath wails-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Wails build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wails-windows-build-diagnostics
+          path: wails-build.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Root package tests
         run: go test .
       - name: Upload artifact
