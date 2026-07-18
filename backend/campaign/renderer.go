@@ -13,21 +13,26 @@ import (
 // Renderer turns a Campaign + Contact into a RenderedMessage. It is the single
 // rendering path shared by preview, test send, and bulk send.
 type Renderer struct {
-	mf   *mergefield.Renderer
-	stat func(string) (os.FileInfo, error)
+	mf              *mergefield.Renderer
+	stat            func(string) (os.FileInfo, error)
+	attachmentCache map[string]ResolvedAttachment
 }
 
 // NewRenderer builds a renderer for a campaign's schema.
 func NewRenderer(c Campaign) *Renderer {
 	return &Renderer{
-		mf:   mergefield.NewRenderer(c.Schema()),
-		stat: os.Stat,
+		mf:              mergefield.NewRenderer(c.Schema()),
+		stat:            os.Stat,
+		attachmentCache: make(map[string]ResolvedAttachment),
 	}
 }
 
-// withStat overrides the filesystem stat function (used in tests).
+// withStat overrides the filesystem stat function (used in tests). Replacing the
+// stat source also resets cached metadata so tests and callers never observe
+// entries produced by a previous stat implementation.
 func (r *Renderer) withStat(fn func(string) (os.FileInfo, error)) *Renderer {
 	r.stat = fn
+	r.attachmentCache = make(map[string]ResolvedAttachment)
 	return r
 }
 
@@ -44,10 +49,6 @@ func (r *Renderer) Render(c Campaign, contact models.Contact) RenderedMessage {
 	msg.Subject = subject
 	diags = append(diags, sd...)
 
-	// Render both bodies; the appropriate one is escaped for its context.
-	// HTML body: merge values are escaped during render, then the whole body is
-	// normalized for email clients and sanitized (defense in depth against any
-	// script/handler/unsafe-URL in the authored template).
 	htmlBody, hd := r.mf.Render(c.BodyTemplate, contact, true)
 	textBody, _ := r.mf.Render(c.BodyTemplate, contact, false)
 	msg.HTMLBody = htmlutil.Sanitize(htmlutil.NormalizeForEmail(htmlBody))
@@ -91,9 +92,14 @@ func renderAddressList(mf *mergefield.Renderer, rendered string, _ models.Contac
 }
 
 func (r *Renderer) resolveAttachment(path string) ResolvedAttachment {
+	if cached, ok := r.attachmentCache[path]; ok {
+		return cached
+	}
+
 	ra := ResolvedAttachment{Path: path, Name: filepath.Base(path)}
 	if path == "" {
 		ra.Error = "empty attachment path"
+		r.attachmentCache[path] = ra
 		return ra
 	}
 	info, err := r.stat(path)
@@ -103,6 +109,7 @@ func (r *Renderer) resolveAttachment(path string) ResolvedAttachment {
 		} else {
 			ra.Error = err.Error()
 		}
+		r.attachmentCache[path] = ra
 		return ra
 	}
 	ra.Exists = true
@@ -111,5 +118,6 @@ func (r *Renderer) resolveAttachment(path string) ResolvedAttachment {
 	if ra.IsDir {
 		ra.Error = "attachment path is a directory"
 	}
+	r.attachmentCache[path] = ra
 	return ra
 }
