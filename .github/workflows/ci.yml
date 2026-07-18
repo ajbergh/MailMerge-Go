@@ -228,25 +228,3 @@ jobs:
             frontend.cdx.json
           if-no-files-found: error
           retention-days: 30
-
-  apply-progress-emitter-remediation:
-    name: Decouple Wails progress emission
-    if: github.event_name == 'pull_request' && github.head_ref == 'agent/post-pr-full-remediation'
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-      - name: Apply validated source change
-        shell: bash
-        run: |
-          python .github/remediation/fix_progress.py
-          gofmt -w app.go
-          git rm .github/remediation/fix_progress.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app.go .github/workflows/ci.yml
-          git commit -m "fix(app): isolate Wails progress emission from run context"
-          git push origin HEAD:${GITHUB_HEAD_REF}
