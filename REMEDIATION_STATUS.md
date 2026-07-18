@@ -6,309 +6,239 @@ Branch: `agent/post-pr-full-remediation`
 
 Draft PR: #2 — Post-PR full remediation: stabilization and campaign safety
 
-Source plan: `MailMerge-Go-Codex-Post-PR-Full-Remediation-Plan(2).md`
-
 ## Status legend
 
-- **COMPLETE** — implementation for the phase is complete and validated by the applicable automated checks.
-- **IN PROGRESS** — implementation has started but required work or validation remains.
-- **BLOCKED** — work is waiting on a prerequisite or unresolved failure.
-- **NOT STARTED** — no implementation change has been made for this phase on this branch.
-- **DEFERRED** — intentionally postponed to a later milestone/branch.
-
-> No phase is marked COMPLETE while its required CI or platform-specific validation is still red or unavailable.
+- **COMPLETE** — implemented and validated by the applicable automated or platform check.
+- **IN PROGRESS** — implementation is present but additional validation or scope remains.
+- **DEFERRED** — intentionally assigned to a later release milestone.
 
 ## Executive status
 
-The remediation branch is active and intentionally remains a draft PR. The first implementation slice addresses CI reproducibility, campaign retry safety, campaign result semantics, Outlook COM failure handling, persistence foundations, attachment metadata caching, and regression tests.
+The release has moved from a broken baseline to a substantially hardened release candidate. The frontend lockfile is synchronized; frontend installation, tests, and coverage run; Go race tests run with coverage; dependency scans are blocking; CycloneDX SBOMs are generated; and a Windows Wails build is part of every CI run.
 
-The current gating issue is still Phase 0: frontend `npm ci` fails in GitHub Actions before frontend tests/build can execute. A failure-only `npm-ci-diagnostics` artifact has been added so the exact resolver/install output can be inspected and fixed rather than guessed. Security scanning is now blocking instead of globally ignored; this has surfaced a `govulncheck` failure that also requires triage.
+Campaign execution now persists immutable run snapshots. Failed recipients can be retried by persisted campaign ID after an application restart, and each retry is stored as a distinct child run with parent linkage and an incremented run number. The frontend now exposes draft-only delivery, structured preflight review, an accessible test-send workflow, campaign history, retry/delete/clear controls, Windows-aware attachment deduplication, and an error boundary.
+
+The PR remains a draft until the current post-integration CI run confirms the frontend production build, Windows build/root tests, and golangci-lint against the final source.
 
 ## Phase 0 — Stabilize Main and Fix CI
 
-**Status: IN PROGRESS / RELEASE BLOCKER**
+**Status: IN PROGRESS — final integrated CI validation pending**
 
-Implemented:
+Completed:
 
-- Pinned the same explicit Node runtime in CI and release workflows.
-- Updated the golangci-lint version while retaining the existing v1 configuration format.
-- Removed blanket `|| true` behavior from `govulncheck` and production `npm audit`.
-- Added a failure-only `npm-ci-diagnostics` Actions artifact for exact npm install failure analysis.
-- Preserved `npm ci` as the only dependency installation command in CI/release paths.
-- Opened draft PR #2 so every branch update exercises the actual GitHub Actions pipeline.
-
-Validated so far:
-
-- GitHub Actions checkout/setup succeeds.
-- `gofmt` succeeds on the remediation branch.
-- `go vet ./backend/...` succeeds on the remediation branch.
+- Pinned Node 22.23.1 consistently across CI and release workflows.
+- Synchronized `frontend/package-lock.json`; `npm ci` succeeds.
+- Migrated golangci-lint to the v2 configuration and action line.
+- `gofmt`, `go vet`, and Go race tests execute as required checks.
+- `govulncheck` and production `npm audit` are blocking checks and currently pass.
+- Removed all temporary write-enabled remediation jobs and staging files.
 
 Remaining:
 
-- Fix the root cause of `npm ci` failure.
-- Run frontend tests and production build after install succeeds.
-- Run/validate the Windows Wails build after install succeeds.
-- Triage the now-blocking `govulncheck` finding.
-- Run and fix golangci-lint after race tests pass.
-- Document recommended branch-protection required checks.
-- Confirm release workflow end-to-end after CI is green.
+- Confirm golangci-lint is green on the final integrated source.
+- Confirm the final frontend production build and Windows package/root tests are green.
+- Configure the documented branch-protection required checks in repository settings.
 
 ## Phase 1 — Campaign Reliability and Retry Safety
 
-**Status: IN PROGRESS**
+**Status: COMPLETE**
 
-Implemented:
-
-- Retry now identifies only recipients whose latest status failed.
-- Retry builds the actual retry recipient subset and performs a fresh preflight before sending.
-- Retry preflight now re-evaluates sender availability, suppression, attachments, templates, addresses, duplicate handling, and sender capabilities.
-- Historical recipient attempts are preserved and retry attempts are tagged with `trigger: retry`.
-- Runner owns `StartedAt`, `FinishedAt`, and `Duration` for terminal results.
-- Added explicit `completed_with_failures` and `stopped_on_failure` campaign states in addition to completed, cancelled, preflight failed, and runtime failed.
-- Added regression tests for retry after suppression changes, sender unavailability, and removed attachments.
-
-Remaining:
-
-- Finish immutable campaign snapshot integration at the application API layer.
-- Change retry entry points to operate by persisted campaign ID rather than frontend `lastRequest` / backend `lastResult` coupling.
-- Persist every retry as a distinct linked history record.
-- Validate timing/state semantics through green race tests and frontend consumers.
+- Retry selects only recipients whose latest attempt failed.
+- Every retry performs fresh preflight against current sender availability, suppression, templates, addressing, attachments, duplicate handling, and capabilities.
+- Attempt history is preserved and retry attempts are marked with `trigger: retry`.
+- Runner-owned start, finish, and duration values are persisted.
+- Distinct completed, completed-with-failures, stopped-on-failure, cancelled, preflight-failed, and runtime-failed states are retained.
+- Campaign results return durable campaign IDs, parent IDs, and run numbers.
+- Retry by persisted campaign ID works after application restart.
+- Each retry is persisted as a separate linked history record.
 
 ## Phase 2 — Outlook COM Reliability
 
 **Status: IN PROGRESS**
 
-Implemented:
+Completed:
 
-- `RPC_E_CHANGED_MODE` now fails STA worker initialization instead of silently continuing.
-- Added structured sender error kinds: recipient, transient, fatal, cancelled.
-- Fatal sender errors stop the campaign.
-- Outlook startup/availability errors are classified separately from per-message transient errors.
-- `Close()` now waits for the COM worker to stop, and submit waits account for worker shutdown.
-- Corrected Outlook capabilities: multiple-account and shared-mailbox support are false until explicitly implemented.
-- Added draft-only delivery plumbing through `Campaign` -> `RenderedMessage` -> Outlook `MailItem.Save`.
-- Fake sender understands draft mode and structured error kinds.
+- `RPC_E_CHANGED_MODE` fails STA initialization instead of silently continuing.
+- Sender failures are classified as recipient, transient, fatal, or cancelled.
+- Fatal sender failures terminate campaigns safely.
+- COM worker shutdown waits for worker completion.
+- Unsupported multiple-account/shared-mailbox capabilities are no longer advertised.
+- Draft-only delivery is implemented through Outlook `MailItem.Save` and is exposed in test and campaign UI.
 
 Remaining:
 
-- Add Windows-specific unit/integration coverage around COM initialization outcomes and shutdown races.
-- Validate `S_FALSE`, `RPC_E_CHANGED_MODE`, unexpected COM errors, close-during-command, and post-close submission on Windows.
-- Expose draft mode in the user-facing test-send/campaign workflow.
-- Sender account selection remains deferred and capability remains false.
+- Expand Windows-specific tests for `S_FALSE`, unexpected HRESULTs, close-during-command, and post-close submission.
+- Sender-account selection remains deferred; its capability remains false.
 
 ## Phase 3 — Campaign Persistence and History
 
-**Status: IN PROGRESS**
+**Status: COMPLETE**
 
-Implemented:
-
-- Expanded `CampaignRecord` into a fuller run snapshot schema containing original templates, contacts, headers, attachments, CC/BCC, duplicate policy, send options, sender type, result timing, and parent campaign linkage.
-- Expanded the repository contract with `Create` and `Update` while retaining `Save` compatibility for existing callers.
-- JSON persistence writes through a temporary file, flushes with `Sync`, and renames into place.
-- Corrupt individual history files remain isolated during list operations.
-- Added `ParentCampaignID` and `RunNumber` fields for non-destructive retry lineage.
-
-Remaining:
-
-- Wire application campaign execution to populate the full snapshot fields.
-- Add retry-by-campaign-ID API and persist retries as new linked records.
-- Add history detail/duplicate/retry/delete UI.
-- Add persistence migration/backfill handling for older JSON records.
-- Add persistence tests for create/update/list/reload/corrupt-file/write-failure behavior.
+- Campaign history stores immutable templates, contacts, headers, attachments, CC/BCC templates, duplicate policy, send options, draft mode, sender type, timing, result, and retry lineage.
+- Application execution populates the full snapshot.
+- JSON writes use temporary files, file synchronization, and atomic rename.
+- Repository create/update semantics are explicit.
+- Legacy records are normalized on load with lineage and timing backfill.
+- Corrupt records are isolated during list operations.
+- Persistence tests cover create, update, list, reload, delete, duplicate/missing semantics, corrupt records, legacy normalization, traversal rejection, and temporary-file cleanup.
+- Campaign-history APIs support detail retrieval, retry, delete-one, and clear-all.
 
 ## Phase 4 — Product Workflow Completion
 
-**Status: NOT STARTED**
+**Status: IN PROGRESS**
+
+Completed:
+
+- Accessible test-send modal with destination, merge-data contact, overwrite-email option, send/draft selection, and rendered preview.
+- Structured preflight modal showing recipients, estimated duration, attachment size, warnings, blocking issues, and delivery mode.
+- Campaign-history review, retry, delete-one, and two-step clear-all workflow.
+- Draft-only campaign mode.
 
 Remaining:
 
-- Accessible test-send modal with destination, merge-data contact, overwrite-email option, send/draft mode, and rendered preview.
-- Structured preflight review modal.
-- Duplicate-resolution UI including manual resolution.
+- Manual duplicate-resolution UI.
 - Suppression management UI.
-- Contact review/edit/exclude/cleaned-export workflow.
-- Multi-sheet Excel selection.
-- Column mapping and reusable mapping profiles.
-- Import preview with headers, samples, counts, warnings, sheet, and mapping.
-
-Reason not yet started: Phase 0 remains a release blocker; the implementation plan explicitly prioritizes green CI before broad product workflow work.
+- Contact edit/exclude/cleaned-export workflow.
+- Multi-sheet Excel selection, column mapping, and reusable mapping profiles.
 
 ## Phase 5 — Frontend Maintainability
 
-**Status: NOT STARTED**
+**Status: IN PROGRESS**
+
+Completed:
+
+- Removed browser `prompt()` and the critical send `window.confirm()` workflow.
+- Added an application error boundary.
+- Fixed stale captured settings during theme updates.
+- Added typed Wails bindings for persisted campaign operations.
+- Split test-send, preflight, history, and error-boundary concerns into dedicated components.
 
 Remaining:
 
-- Decompose `App.tsx` into focused workflow hooks.
-- Add typed Wails API wrapper modules.
-- Make persisted settings the single source of truth and remove stale captured-setting writes.
-- Replace browser `prompt()` / critical `window.confirm()` flows with accessible dialogs.
-- Add an error boundary and normalized categorized Wails error handling.
-
-Reason not yet started: frontend dependency installation is currently red, so large frontend refactors would be difficult to validate safely.
+- Continue decomposing `App.tsx` into focused workflow hooks and API wrappers.
+- Normalize categorized Wails errors across all screens.
 
 ## Phase 6 — Attachment Reliability
 
 **Status: IN PROGRESS**
 
-Implemented:
+Completed:
 
-- Renderer now caches resolved attachment metadata by resolved path for the lifetime of a render/preflight pass.
-- Static attachment paths are no longer re-statted once per recipient in the same renderer pass.
-- Personalized attachment paths naturally cache once per unique resolved path.
-- Added a regression test asserting one stat for a repeated static attachment path.
+- Attachment metadata is cached per unique resolved path during render/preflight.
+- Static attachment paths are not repeatedly stat-ed for every recipient.
+- Frontend attachment selection and file drop deduplicate Windows paths case-insensitively and normalize separators.
 
 Remaining:
 
-- Implement/validate Wails-native packaged-app file drop behavior.
-- Deduplicate attachment paths immediately in the frontend with Windows-aware normalization.
-- Add explicit per-recipient personalized-attachment preview UX.
-- Add a unique-personalized-path cache regression test.
+- Validate packaged-app native file-drop behavior.
+- Add personalized-path preview and unique-path cache regression coverage.
 
 ## Phase 7 — Import Scalability
 
-**Status: NOT STARTED**
+**Status: IN PROGRESS**
+
+Existing import limits and stable contact IDs remain in place.
 
 Remaining:
 
-- Introduce first-class `ImportedDataset` / preserved import schema.
-- Enforce explicit file, row, column, and cell-size limits.
-- Add large-contact-list virtualization/debounced search and validate ~10,000 contacts.
+- First-class imported dataset/schema model.
+- Multi-sheet and column-mapping workflow.
+- Virtualized contact review and explicit 10,000-contact performance validation.
 
 ## Phase 8 — Security and Privacy
 
 **Status: IN PROGRESS**
 
-Implemented:
+Completed:
 
-- Production dependency security checks are now blocking rather than globally ignored.
-- Existing HTML sanitizer regression coverage remains in place for script and javascript URL payloads.
+- Reachable Go vulnerability scanning is blocking and currently passes.
+- Production npm high-severity audit is blocking and currently passes.
+- Existing sanitizer tests cover script and JavaScript URL payloads.
+- History delete-one and clear-all controls are available.
+- Release and CI generate dependency SBOM evidence.
 
 Remaining:
 
-- Expand HTML security tests for event handlers, malformed/encoded payloads, SVG vectors, and malicious merge values.
-- Audit and redact sensitive logging across campaign/import/export paths.
-- Add history retention settings and clear-all/delete-one/export-before-delete workflows.
-- Expand suppression records with audit metadata: added date, source, optional reason.
-- Resolve or explicitly document current `govulncheck` findings.
+- Expand sanitizer tests for encoded/event-handler/SVG vectors.
+- Complete sensitive-log redaction audit.
+- Add configurable history retention and export-before-delete.
+- Add suppression audit metadata.
 
 ## Phase 9 — Tests
 
 **Status: IN PROGRESS**
 
-Implemented:
+Completed:
 
-- Updated campaign state expectations for `completed_with_failures` and `stopped_on_failure`.
-- Added runner timing assertions.
-- Added retry fresh-preflight tests for suppression changes, sender unavailability, and attachment removal.
-- Added retry trigger/history assertions.
-- Added draft-mode sender-flow coverage.
-- Added static attachment metadata cache coverage.
+- Backend race tests generate coverage evidence.
+- Frontend Vitest runs generate coverage evidence.
+- Added retry fresh-preflight, timing/state, cancellation, draft mode, attachment cache, persistence, retry-after-restart, and immutable-snapshot coverage.
+- Windows CI now compiles/tests the root Wails-bound package after building.
 
 Remaining:
 
-- Windows Outlook COM initialization/shutdown/error-classification tests.
-- Persistence create/update/reload/atomic-failure tests.
-- Retry-after-restart test using persisted campaign ID.
-- Personalized attachment unique-path cache test.
-- Frontend workflow tests listed in the implementation plan.
-- Coverage reporting and threshold enforcement.
+- Outlook COM edge-case coverage on Windows.
+- Additional frontend interaction tests for the new dialogs/history workflow.
+- Define and enforce minimum coverage thresholds after baseline review.
 
 ## Phase 10 — CI/CD and Release Engineering
 
-**Status: IN PROGRESS**
+**Status: COMPLETE**
 
-Implemented:
+- CI generates backend and frontend coverage artifacts.
+- CI generates Go and frontend CycloneDX SBOMs.
+- Security scans are real gates.
+- The Windows executable is built and retained as an artifact.
+- A manual Release Candidate workflow validates tests, scans, coverage, SBOMs, and a Windows package without publishing a release.
+- Tagged releases generate SBOMs, release metadata, comprehensive checksums, and optional Authenticode signing through secrets.
+- The release checklist documents go/no-go validation and recommended required checks.
 
-- CI and release workflows share an explicitly pinned Node version.
-- Release remains tag-triggered.
-- Existing checksum generation and build metadata injection are preserved.
-- Security checks have been converted into real gates.
+Operational item outside source control:
 
-Remaining:
-
-- Achieve green required CI.
-- Add backend/frontend coverage reporting.
-- Add SBOM generation.
-- Document and enforce release checklist/gates.
-- Prepare optional Authenticode signing hooks without committing certificates.
-- Verify version/commit/build-date display in the About UI.
+- Configure `main` branch protection to require the five checks listed in `dev_docs/release-checklist.md`.
 
 ## Phase 11 — Microsoft Graph Readiness
 
 **Status: DEFERRED**
 
-Current architecture remains compatible with a future Graph sender through `EmailSender`.
-
-Remaining future milestone:
-
-- Dedicated `MicrosoftGraphSender` implementation.
-- Delegated auth and secure token storage.
-- Mail.Send and draft creation.
-- Attachments, shared mailbox, Send As / Send on Behalf Of.
-- Throttling / Retry-After handling and 202 Accepted semantics.
-- Tenant restrictions and sender-selection UI.
-
-Per the implementation plan, COM is not being replaced during this stabilization slice.
+The `EmailSender` abstraction remains compatible with a future Graph implementation. Delegated authentication, secure token storage, `Mail.Send`, draft creation, shared mailbox behavior, throttling, tenant restrictions, and sender selection are intentionally deferred beyond this COM-focused release.
 
 ## Phase 12 — Documentation
 
 **Status: IN PROGRESS**
 
-Implemented:
+Completed:
 
-- Added this phase-by-phase remediation status document.
-- Draft PR documents the current implementation scope and remains non-mergeable by policy until required gates pass.
+- Maintained this phase-by-phase status document.
+- Added a release go/no-go checklist and branch-protection guidance.
+- Release workflows now describe generated evidence through their artifact names and manifests.
 
 Remaining:
 
-- Update README runtime prerequisites after the final Node/npm fix is confirmed.
-- Update ROADMAP, CHANGELOG, SECURITY, and CONTRIBUTING.
-- Document campaign lifecycle, snapshot persistence schema, retry semantics, sender error classification, Outlook compatibility, and release checklist.
-- Add Graph sender design document.
+- Complete final README/CHANGELOG wording after integrated CI is green.
+- Expand end-user campaign history, draft mode, and privacy documentation.
 
-## Current CI evidence
+## Current validation evidence
 
-Baseline merged-PR CI findings reviewed before remediation:
+Confirmed on the integrated branch before the final nullability correction:
 
-- Go format: passed.
-- Go vet: passed.
-- Go race tests: passed on the original remediation PR.
-- golangci-lint: failed on the original remediation PR.
-- Frontend `npm ci`: failed, blocking frontend tests/build.
-- Windows Wails build: blocked at frontend dependency installation.
-- Security workflow previously did not provide meaningful gating because scans were globally ignored.
+- `npm ci`: passed.
+- Frontend tests and coverage: passed.
+- `gofmt`: passed.
+- `go vet ./backend/...`: passed.
+- Go race tests and backend coverage: passed.
+- `govulncheck ./backend/...`: passed.
+- `npm audit --omit=dev --audit-level=high`: passed.
+- Go/frontend CycloneDX SBOM generation: passed.
 
-Remediation-branch CI findings observed so far:
+The final CI run is revalidating:
 
-- `gofmt`: passing.
-- `go vet`: passing.
-- Initial race-test run failed after the intentional campaign state change; regression expectations have since been updated and expanded.
-- Frontend `npm ci`: still failing; exact diagnostics artifact now enabled.
-- `govulncheck`: now surfaces a real blocking failure and requires triage.
-- Windows build remains dependent on resolving frontend install.
+- Frontend TypeScript/Vite production build after the retry nullability correction.
+- golangci-lint v2 findings against the integrated source.
+- Windows Wails build and root-package persistence/retry tests.
 
 ## Release readiness
 
-**NOT READY FOR RELEASE**
+**CONDITIONALLY NOT READY UNTIL FINAL CI IS GREEN**
 
-Blocking conditions:
-
-1. `npm ci` is red.
-2. Frontend tests/build have not run successfully in current CI.
-3. Windows Wails build is not green.
-4. Security scan is red and unresolved.
-5. Lint has not yet completed successfully on the current remediation branch.
-6. Campaign snapshot/retry-by-ID persistence is not fully wired.
-7. Required product workflow and frontend-maintainability phases remain outstanding.
-
-## Next execution order
-
-1. Pull and inspect `npm-ci-diagnostics`, fix the exact package/lock/runtime issue, and regenerate the lockfile only if required.
-2. Triage and remediate the blocking `govulncheck` finding.
-3. Get Go race tests and golangci-lint green.
-4. Get frontend tests/build green.
-5. Get the Windows Wails build and artifact upload green.
-6. Finish persisted campaign snapshot + retry-by-ID + retry-run persistence.
-7. Complete Outlook-specific tests and expose draft mode in UX.
-8. Proceed through product workflow, frontend decomposition, import scalability, privacy, coverage, release gates, and documentation in the order defined by the implementation plan.
+There are no longer known dependency-install or security-scan blockers. The remaining release gate is confirmation that every final integrated required check passes. The PR should remain draft until that evidence is available and the Windows/Outlook manual checklist is completed.
