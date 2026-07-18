@@ -1,0 +1,121 @@
+name: Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: Optional release-candidate label, for example 1.2.0-rc.1
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.24.x"
+  NODE_VERSION: "22.23.1"
+  WAILS_VERSION: "v2.11.0"
+  GOLANGCI_LINT_VERSION: "v2.11.4"
+  CYCLONEDX_GOMOD_VERSION: "v1.10.0"
+
+jobs:
+  validate:
+    name: Validate release candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Go formatting
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          test -z "$unformatted" || { echo "$unformatted"; exit 1; }
+      - name: Go vet
+        run: go vet ./...
+      - name: Go race tests and coverage
+        run: go test -race -covermode=atomic -coverprofile=backend-coverage.out ./...
+      - name: Go lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: ./...
+      - name: Go vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: Frontend install, test, and build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint --if-present
+          npm run test -- --coverage
+          npm run build
+          npm audit --omit=dev --audit-level=high
+      - name: Generate CycloneDX SBOMs
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@${{ env.CYCLONEDX_GOMOD_VERSION }}
+          cyclonedx-gomod mod -json -output backend.cdx.json
+          cd frontend
+          npm sbom --omit=dev --sbom-format=cyclonedx > ../frontend.cdx.json
+      - name: Upload validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-validation
+          path: |
+            backend-coverage.out
+            frontend/coverage
+            backend.cdx.json
+            frontend.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-package:
+    name: Build Windows release candidate
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build release candidate
+        shell: pwsh
+        run: |
+          $label = "${{ inputs.label }}"
+          if ([string]::IsNullOrWhiteSpace($label)) { $label = "rc-${{ github.run_number }}" }
+          $date = (Get-Date -Format "yyyy-MM-dd")
+          wails build -platform windows/amd64 -ldflags "-X main.Version=$label -X main.Commit=${{ github.sha }} -X main.BuildDate=$date"
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem build/bin/*.exe | Sort-Object Name | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + $_.Name
+          } | Out-File build/bin/SHA256SUMS.txt -Encoding ascii
+      - name: Upload release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: MailMergeApp-release-candidate
+          path: |
+            build/bin/*.exe
+            build/bin/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
