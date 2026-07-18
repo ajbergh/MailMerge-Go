@@ -8,6 +8,7 @@
 +	defer func() { _ = file.Close() }()
  
  	reader := csv.NewReader(file)
+ 
 @@ -201,12 +201,12 @@
  	if err != nil {
  		return nil, fmt.Errorf("failed to open Excel file: %w", err)
@@ -21,6 +22,8 @@
 -		return nil, fmt.Errorf("Excel file contains no sheets")
 +		return nil, fmt.Errorf("excel file contains no sheets")
  	}
+ 
+ 	rows, err := f.GetRows(sheets[0])
 @@ -215,7 +215,7 @@
  	}
  
@@ -28,6 +31,8 @@
 -		return nil, fmt.Errorf("Excel sheet is empty")
 +		return nil, fmt.Errorf("excel sheet is empty")
  	}
+ 
+ 	if len(rows[0]) > MaxImportColumns {
 @@ -279,13 +279,13 @@
  			normalized = strings.ReplaceAll(normalized, sep, "")
  		}
@@ -46,6 +51,7 @@
 +		case "email", "emailaddress", "mail":
  			indices["email"] = i
  		}
+ 	}
 --- a/backend/services/services_test.go
 +++ b/backend/services/services_test.go
 @@ -86,7 +86,7 @@
@@ -65,6 +71,9 @@
  // ErrNotImplemented is returned by the stub sender until Graph support lands.
 -var ErrNotImplemented = errors.New("Microsoft Graph sender is not implemented yet")
 +var ErrNotImplemented = errors.New("microsoft Graph sender is not implemented yet")
+ 
+ // Config holds the (future) Graph sender configuration. Tokens are never stored
+ // in plaintext; TokenStore is expected to use the OS credential store / DPAPI.
 --- a/backend/campaign/runner.go
 +++ b/backend/campaign/runner.go
 @@ -26,11 +26,6 @@
@@ -77,3 +86,5 @@
 -}
 -
  // NewRunner builds a Runner.
+ func NewRunner(sender EmailSender, opts ...RunnerOption) *Runner {
+ 	r := &Runner{sender: sender, clock: RealClock{}, preflight: NewPreflighter(), stat: os.Stat}
