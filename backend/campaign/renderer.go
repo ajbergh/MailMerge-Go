@@ -37,7 +37,7 @@ func (r *Renderer) Render(c Campaign, contact models.Contact) RenderedMessage {
 		contact.Email = c.ToOverride
 	}
 
-	msg := RenderedMessage{IsHTML: c.IsHTML}
+	msg := RenderedMessage{IsHTML: c.IsHTML, SaveAsDraft: c.DraftOnly}
 	var diags []mergefield.Diagnostic
 
 	subject, sd := r.mf.Render(c.SubjectTemplate, contact, false)
@@ -56,14 +56,12 @@ func (r *Renderer) Render(c Campaign, contact models.Contact) RenderedMessage {
 		diags = append(diags, hd...)
 	}
 
-	// To
 	toAddr := c.ToOverride
 	if toAddr == "" {
 		toAddr = contact.Email
 	}
 	msg.To = renderAddressList(r.mf, toAddr, contact)
 
-	// CC / BCC
 	if c.CCTemplate != "" {
 		cc, _ := r.mf.Render(c.CCTemplate, contact, false)
 		msg.CC = renderAddressList(r.mf, cc, contact)
@@ -73,7 +71,6 @@ func (r *Renderer) Render(c Campaign, contact models.Contact) RenderedMessage {
 		msg.BCC = renderAddressList(r.mf, bcc, contact)
 	}
 
-	// Attachments (personalized paths resolved and validated).
 	for _, a := range c.Attachments {
 		path, _ := r.mf.Render(a, contact, false)
 		msg.Attachments = append(msg.Attachments, r.resolveAttachment(path))
@@ -83,15 +80,12 @@ func (r *Renderer) Render(c Campaign, contact models.Contact) RenderedMessage {
 	return msg
 }
 
-// renderAddressList renders a template into a normalized address list.
 func renderAddressList(mf *mergefield.Renderer, rendered string, _ models.Contact) []string {
 	valid, invalid := email.ParseList(rendered)
 	out := make([]string, 0, len(valid)+len(invalid))
 	for _, a := range valid {
 		out = append(out, a.String())
 	}
-	// Keep invalid entries too so preflight can flag them; they are not silently
-	// dropped.
 	out = append(out, invalid...)
 	return out
 }
