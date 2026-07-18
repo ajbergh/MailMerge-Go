@@ -612,7 +612,7 @@ function App() {
       setProgressLogs([]);
       const result = sendResult.campaignId
         ? await RetryCampaign(sendResult.campaignId)
-        : await RetryFailed(lastRequest);
+        : await RetryFailed(lastRequest!);
       setSendResult(result);
     } catch (err: any) {
       setError(`Failed to retry emails: ${err.message || err}`);
