@@ -177,3 +177,19 @@ jobs:
             frontend.cdx.json
           if-no-files-found: error
           retention-days: 30
+
+  remediation-source-snapshot:
+    name: Remediation source snapshot
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/post-pr-full-remediation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create source snapshot
+        run: tar --exclude=.git --exclude=frontend/node_modules --exclude=build/bin -czf /tmp/mailmerge-source.tar.gz .
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: remediation-source-snapshot
+          path: /tmp/mailmerge-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
