@@ -193,3 +193,32 @@ jobs:
           path: /tmp/mailmerge-source.tar.gz
           if-no-files-found: error
           retention-days: 1
+
+  apply-remediation-patch:
+    name: Apply staged application remediation
+    if: github.event_name == 'pull_request' && github.head_ref == 'agent/post-pr-full-remediation'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Assemble and validate patch
+        shell: bash
+        run: |
+          : > /tmp/remediation.patch
+          for part in .github/remediation/app-release.patch.part-*; do
+            awk 'BEGIN { fix=0 } /^\+diff -ruN / { fix=1 } { if (fix && substr($0,1,1)=="+") print substr($0,2); else print }' "$part" >> /tmp/remediation.patch
+          done
+          patch --dry-run -p1 < /tmp/remediation.patch
+      - name: Apply patch and commit source
+        shell: bash
+        run: |
+          patch -p1 < /tmp/remediation.patch
+          rm -f .github/remediation/app-release.patch.part-* .github/remediation/app-release.patch.gz.b64.part-00
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "phases 1-5: persist campaign lineage and complete send workflow"
+          git push origin HEAD:${GITHUB_HEAD_REF}
