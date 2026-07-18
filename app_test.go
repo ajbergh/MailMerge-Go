@@ -103,3 +103,16 @@ func TestCampaignSnapshotIsIndependentFromRequestMutation(t *testing.T) {
 		t.Fatalf("persisted snapshot changed with caller mutation: %+v", record.Contacts[0])
 	}
 }
+
+func TestHeadlessCampaignDoesNotRequireWailsRuntimeContext(t *testing.T) {
+	sender := campaign.NewFakeSender()
+	app := &App{sender: sender, runner: campaign.NewRunner(sender)}
+	result := app.SendBulkEmails(models.EmailRequest{
+		Contacts:        []models.Contact{{ID: "headless", Email: "headless@example.com"}},
+		SubjectTemplate: "Headless",
+		BodyTemplate:    "Body",
+	})
+	if result.State != campaign.CampaignCompleted || result.Submitted != 1 {
+		t.Fatalf("unexpected headless campaign result: %+v", result)
+	}
+}
