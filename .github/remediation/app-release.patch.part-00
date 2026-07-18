@@ -1,0 +1,401 @@
+diff -ruN base/app.go repo/app.go
+--- base/app.go	2026-07-18 18:05:30.000000000 +0000
++++ repo/app.go	2026-07-18 18:10:10.394291805 +0000
+@@ -48,9 +48,10 @@
+ 	suppression     *services.SuppressionService // Suppression / unsubscribe list
+ 	history         storage.CampaignRepository   // Campaign run history (JSON-backed)
+ 
+-	mu         sync.Mutex         // guards cancel and lastResult
+-	cancel     context.CancelFunc // cancels the in-flight campaign, if any
+-	lastResult *campaign.CampaignResult
++	mu             sync.Mutex         // guards cancel and lastResult
++	cancel         context.CancelFunc // cancels the in-flight campaign, if any
++	lastResult     *campaign.CampaignResult
++	lastCampaignID string
+ 
+ 	version   string // build-time version metadata
+ 	commit    string
+@@ -99,24 +100,55 @@
+ 	}
+ }
+ 
+-// recordRun persists a terminal campaign result to history (best effort).
+-func (a *App) recordRun(subject string, isHTML bool, res campaign.CampaignResult) {
++// persistRun stores an immutable campaign snapshot and returns the result with
++// durable campaign lineage metadata. Persistence is best-effort: a send result is
++// still returned when history storage is unavailable, but retry-by-ID will not be
++// available for that run.
++func (a *App) persistRun(c campaign.Campaign, res campaign.CampaignResult, parentID string, runNumber int) campaign.CampaignResult {
+ 	if a.history == nil {
+-		return
++		return res
+ 	}
++	if runNumber < 1 {
++		runNumber = 1
++	}
++
++	id := uuid.NewString()
++	res.CampaignID = id
++	res.ParentCampaignID = parentID
++	res.RunNumber = runNumber
++
+ 	rec := storage.CampaignRecord{
+-		ID:             uuid.NewString(),
+-		StartedAt:      time.Now(),
+-		FinishedAt:     time.Now(),
+-		Subject:        subject,
+-		IsHTML:         isHTML,
+-		RecipientCount: res.Attempted + res.Skipped + res.Cancelled,
+-		State:          res.State,
+-		Result:         res,
++		ID:               id,
++		ParentCampaignID: parentID,
++		RunNumber:        runNumber,
++		CreatedAt:        time.Now(),
++		StartedAt:        res.StartedAt,
++		FinishedAt:       res.FinishedAt,
++		Duration:         res.Duration,
++		Subject:          c.SubjectTemplate,
++		SubjectTemplate:  c.SubjectTemplate,
++		BodyTemplate:     c.BodyTemplate,
++		IsHTML:           c.IsHTML,
++		DraftOnly:        c.DraftOnly,
++		Headers:          cloneStrings(c.Headers),
++		Contacts:         cloneContacts(c.Contacts),
++		Attachments:      cloneStrings(c.Attachments),
++		CCTemplate:       c.CCTemplate,
++		BCCTemplate:      c.BCCTemplate,
++		DuplicatePolicy:  c.DuplicatePolicy,
++		SendOptions:      c.Options,
++		SenderType:       string(campaign.StateClassicOutlook),
++		RecipientCount:   len(c.Contacts),
++		State:            res.State,
++		Result:           res,
+ 	}
+-	if err := a.history.Save(rec); err != nil {
++	if err := a.history.Create(rec); err != nil {
+ 		fmt.Printf("Warning: failed to record campaign run: %v\n", err)
++		res.CampaignID = ""
++		res.ParentCampaignID = ""
++		res.RunNumber = 0
+ 	}
++	return res
+ }
+ 
+ // GetCampaignHistory returns past campaign runs, newest first.
+@@ -131,6 +163,92 @@
+ 	return records
+ }
+ 
++// GetCampaign returns the immutable snapshot for one campaign run.
++func (a *App) GetCampaign(id string) (*storage.CampaignRecord, error) {
++	if a.history == nil {
++		return nil, fmt.Errorf("campaign history is unavailable")
++	}
++	return a.history.Get(id)
++}
++
++// DeleteCampaign deletes one campaign-history record. It never deletes linked
++// parent or child runs implicitly.
++func (a *App) DeleteCampaign(id string) error {
++	if a.history == nil {
++		return fmt.Errorf("campaign history is unavailable")
++	}
++	if err := a.history.Delete(id); err != nil {
++		return err
++	}
++	a.mu.Lock()
++	if a.lastCampaignID == id {
++		a.lastCampaignID = ""
++		a.lastResult = nil
++	}
++	a.mu.Unlock()
++	return nil
++}
++
++// ClearCampaignHistory deletes every local campaign-history record.
++func (a *App) ClearCampaignHistory() error {
++	if a.history == nil {
++		return fmt.Errorf("campaign history is unavailable")
++	}
++	records, err := a.history.List()
++	if err != nil {
++		return err
++	}
++	for _, rec := range records {
++		if err := a.history.Delete(rec.ID); err != nil {
++			return fmt.Errorf("delete campaign %s: %w", rec.ID, err)
++		}
++	}
++	a.mu.Lock()
++	a.lastCampaignID = ""
++	a.lastResult = nil
++	a.mu.Unlock()
++	return nil
++}
++
++func (a *App) campaignFromRecord(rec storage.CampaignRecord) campaign.Campaign {
++	var suppressed map[string]bool
++	if a.suppression != nil {
++		suppressed = a.suppression.Set()
++	}
++	return campaign.Campaign{
++		Headers:         cloneStrings(rec.Headers),
++		Contacts:        cloneContacts(rec.Contacts),
++		SubjectTemplate: rec.SubjectTemplate,
++		BodyTemplate:    rec.BodyTemplate,
++		IsHTML:          rec.IsHTML,
++		DraftOnly:       rec.DraftOnly,
++		Attachments:     cloneStrings(rec.Attachments),
++		CCTemplate:      rec.CCTemplate,
++		BCCTemplate:     rec.BCCTemplate,
++		Options:         rec.SendOptions.Normalized(),
++		DuplicatePolicy: rec.DuplicatePolicy,
++		Suppressed:      suppressed,
++	}
++}
++
++func cloneStrings(in []string) []string {
++	return append([]string(nil), in...)
++}
++
++func cloneContacts(in []models.Contact) []models.Contact {
++	out := make([]models.Contact, len(in))
++	for i, contact := range in {
++		out[i] = contact
++		if contact.CustomFields != nil {
++			out[i].CustomFields = make(map[string]string, len(contact.CustomFields))
++			for key, value := range contact.CustomFields {
++				out[i].CustomFields[key] = value
++			}
++		}
++	}
++	return out
++}
++
+ // startup is called when the app starts. It receives the Wails context
+ // which is used for runtime operations like dialogs and events.
+ func (a *App) startup(ctx context.Context) {
+@@ -336,6 +454,7 @@
+ 		SubjectTemplate: request.SubjectTemplate,
+ 		BodyTemplate:    request.BodyTemplate,
+ 		IsHTML:          request.IsHTML,
++		DraftOnly:       request.DraftOnly,
+ 		Attachments:     request.Attachments,
+ 		CCTemplate:      firstNonEmpty(request.CCTemplate, request.CC),
+ 		BCCTemplate:     firstNonEmpty(request.BCCTemplate, request.BCC),
+@@ -372,20 +491,54 @@
+ 	defer a.endRun(cancel)
+ 
+ 	res := a.runner.Run(ctx, c, a.progressSink())
++	res = a.persistRun(c, res, "", 1)
+ 
+ 	a.mu.Lock()
+ 	a.lastResult = &res
++	a.lastCampaignID = res.CampaignID
+ 	a.mu.Unlock()
+-	a.recordRun(request.SubjectTemplate, request.IsHTML, res)
+ 	return res
+ }
+ 
+-// RetryFailed retries only the recipients whose latest attempt failed in the
+-// last campaign, appending new attempts without double-counting successes.
++// RetryCampaign reconstructs a campaign from its persisted immutable snapshot,
++// performs fresh preflight against the current environment, and persists the retry
++// as a new child record. This remains safe after an application restart.
++func (a *App) RetryCampaign(campaignID string) campaign.CampaignResult {
++	if a.history == nil {
++		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: "campaign history is unavailable"}
++	}
++	rec, err := a.history.Get(campaignID)
++	if err != nil {
++		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: fmt.Sprintf("load campaign %s: %v", campaignID, err)}
++	}
++	c := a.campaignFromRecord(*rec)
++	if len(c.Contacts) == 0 {
++		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: "stored campaign does not contain recipient data"}
++	}
++
++	ctx, cancel := a.beginRun()
++	defer a.endRun(cancel)
++
++	res := a.runner.Retry(ctx, c, rec.Result, nil, a.progressSink())
++	res = a.persistRun(c, res, rec.ID, rec.RunNumber+1)
++
++	a.mu.Lock()
++	a.lastResult = &res
++	a.lastCampaignID = res.CampaignID
++	a.mu.Unlock()
++	return res
++}
++
++// RetryFailed is retained for Wails/API compatibility. New callers should use
++// RetryCampaign with the CampaignID returned by SendBulkEmails.
+ func (a *App) RetryFailed(request models.EmailRequest) campaign.CampaignResult {
+ 	a.mu.Lock()
++	campaignID := a.lastCampaignID
+ 	prev := a.lastResult
+ 	a.mu.Unlock()
++	if campaignID != "" {
++		return a.RetryCampaign(campaignID)
++	}
+ 	if prev == nil {
+ 		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: "no previous campaign to retry"}
+ 	}
+@@ -395,7 +548,6 @@
+ 	defer a.endRun(cancel)
+ 
+ 	res := a.runner.Retry(ctx, c, *prev, nil, a.progressSink())
+-
+ 	a.mu.Lock()
+ 	a.lastResult = &res
+ 	a.mu.Unlock()
+@@ -442,6 +594,7 @@
+ 		SubjectTemplate: request.SubjectTemplate,
+ 		BodyTemplate:    request.BodyTemplate,
+ 		IsHTML:          request.IsHTML,
++		DraftOnly:       request.DraftOnly,
+ 		Attachments:     request.Attachments,
+ 		CCTemplate:      firstNonEmpty(request.CCTemplate, request.CC),
+ 		BCCTemplate:     firstNonEmpty(request.BCCTemplate, request.BCC),
+diff -ruN base/app_test.go repo/app_test.go
+--- base/app_test.go	1970-01-01 00:00:00.000000000 +0000
++++ repo/app_test.go	2026-07-18 18:11:16.080098613 +0000
+@@ -0,0 +1,105 @@
++package main
++
++import (
++	"context"
++	"testing"
++
++	"MailMergeApp/backend/campaign"
++	"MailMergeApp/backend/models"
++	"MailMergeApp/backend/storage"
++)
++
++func TestRetryCampaignPersistsLineageAcrossRestart(t *testing.T) {
++	repo, err := storage.NewJSONCampaignRepository(t.TempDir())
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	firstSender := campaign.NewFakeSender()
++	firstSender.FailFor = map[string]bool{"failed@example.com": true}
++	firstApp := &App{
++		ctx:     context.Background(),
++		sender:  firstSender,
++		runner:  campaign.NewRunner(firstSender),
++		history: repo,
++	}
++	request := models.EmailRequest{
++		Contacts:        []models.Contact{{ID: "contact-1", FirstName: "Ada", Email: "failed@example.com"}},
++		SubjectTemplate: "Hello {{first_name}}",
++		BodyTemplate:    "Body",
++	}
++
++	initial := firstApp.SendBulkEmails(request)
++	if initial.CampaignID == "" {
++		t.Fatal("initial run did not receive a persisted campaign ID")
++	}
++	if initial.State != campaign.CampaignCompletedWithFailures || initial.Failed != 1 {
++		t.Fatalf("unexpected initial result: %+v", initial)
++	}
++
++	// Simulate an application restart: create a new App with no in-memory lastResult.
++	retrySender := campaign.NewFakeSender()
++	restartedApp := &App{
++		ctx:     context.Background(),
++		sender:  retrySender,
++		runner:  campaign.NewRunner(retrySender),
++		history: repo,
++	}
++	retried := restartedApp.RetryCampaign(initial.CampaignID)
++	if retried.State != campaign.CampaignCompleted || retried.Submitted != 1 || retried.Failed != 0 {
++		t.Fatalf("unexpected retry result: %+v", retried)
++	}
++	if retried.ParentCampaignID != initial.CampaignID || retried.RunNumber != 2 || retried.CampaignID == "" {
++		t.Fatalf("retry lineage is incorrect: %+v", retried)
++	}
++	if len(retried.RecipientResults) != 1 || len(retried.RecipientResults[0].Attempts) != 2 {
++		t.Fatalf("retry did not preserve attempt history: %+v", retried.RecipientResults)
++	}
++
++	records, err := repo.List()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(records) != 2 {
++		t.Fatalf("expected original and retry records, got %d", len(records))
++	}
++	child, err := repo.Get(retried.CampaignID)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if child.ParentCampaignID != initial.CampaignID || child.RunNumber != 2 {
++		t.Fatalf("persisted child lineage is incorrect: %+v", child)
++	}
++	if child.SubjectTemplate != request.SubjectTemplate || len(child.Contacts) != 1 {
++		t.Fatalf("persisted snapshot is incomplete: %+v", child)
++	}
++}
++
++func TestCampaignSnapshotIsIndependentFromRequestMutation(t *testing.T) {
++	repo, err := storage.NewJSONCampaignRepository(t.TempDir())
++	if err != nil {
++		t.Fatal(err)
++	}
++	sender := campaign.NewFakeSender()
++	app := &App{ctx: context.Background(), sender: sender, runner: campaign.NewRunner(sender), history: repo}
++	request := models.EmailRequest{
++		Contacts: []models.Contact{{
++			ID:           "contact-1",
++			Email:        "a@example.com",
++			CustomFields: map[string]string{"company": "Original"},
++		}},
++		SubjectTemplate: "Hello",
++		BodyTemplate:    "{{company}}",
++	}
++	result := app.SendBulkEmails(request)
++	request.Contacts[0].Email = "mutated@example.com"
++	request.Contacts[0].CustomFields["company"] = "Mutated"
++
++	record, err := repo.Get(result.CampaignID)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if record.Contacts[0].Email != "a@example.com" || record.Contacts[0].CustomFields["company"] != "Original" {
++		t.Fatalf("persisted snapshot changed with caller mutation: %+v", record.Contacts[0])
++	}
++}
+diff -ruN base/backend/campaign/types.go repo/backend/campaign/types.go
+--- base/backend/campaign/types.go	2026-07-18 18:05:30.000000000 +0000
++++ repo/backend/campaign/types.go	2026-07-18 18:09:04.104702056 +0000
+@@ -223,6 +223,9 @@
+ // CampaignResult is the typed outcome of a campaign run. A fatal preflight or
+ // Outlook failure is never reported as an empty successful result.
+ type CampaignResult struct {
++	CampaignID       string            `json:"campaignId,omitempty"`
++	ParentCampaignID string            `json:"parentCampaignId,omitempty"`
++	RunNumber        int               `json:"runNumber,omitempty"`
+ 	State            CampaignState     `json:"state"`
+ 	StartedAt        time.Time         `json:"startedAt" ts_type:"string"`
+ 	FinishedAt       time.Time         `json:"finishedAt" ts_type:"string"`
+diff -ruN base/backend/models/contact.go repo/backend/models/contact.go
+--- base/backend/models/contact.go	2026-07-18 18:05:30.000000000 +0000
++++ repo/backend/models/contact.go	2026-07-18 18:09:04.105163053 +0000
+@@ -77,6 +77,7 @@
+ 	BCC             string    `json:"bcc,omitempty"`         // Static BCC addresses (comma-separated)
+ 	CCTemplate      string    `json:"ccTemplate,omitempty"`  // CC with merge fields support
+ 	BCCTemplate     string    `json:"bccTemplate,omitempty"` // BCC with merge fields support
++	DraftOnly       bool      `json:"draftOnly,omitempty"`   // Save to Outlook Drafts instead of sending
+ }
+ 
+ // TestEmailRequest represents a request to send a single test email.
+@@ -102,6 +103,7 @@
+ 	// OverwriteEmail, when true, makes TestAddress also replace the {{email}}
+ 	// merge value; otherwise {{email}} keeps the contact's own address.
+ 	OverwriteEmail bool `json:"overwriteEmail"`
++	DraftOnly      bool `json:"draftOnly,omitempty"` // Save to Outlook Drafts instead of sending
+ }
+ 
+ // ProgressUpdate represents a real-time progress update during bulk sending.
