@@ -43,15 +43,15 @@ func NewRunner(sender EmailSender, opts ...RunnerOption) *Runner {
 // Run preflights and executes a campaign, returning a typed result. A fatal
 // preflight or sender failure is never reported as an empty success.
 func (r *Runner) Run(ctx context.Context, c Campaign, sink ProgressSink) CampaignResult {
+	started := r.clock.Now()
 	if sink == nil {
 		sink = nopSink{}
 	}
 	pf := r.preflight.Preflight(ctx, c, r.sender)
 	if !pf.CanSend {
-		return CampaignResult{State: CampaignPreflightFailed, Preflight: &pf}
+		return r.withTiming(CampaignResult{State: CampaignPreflightFailed, Preflight: &pf}, started)
 	}
 
-	// Seed recipient results in send order.
 	results := make([]RecipientResult, 0, len(pf.Recipients))
 	for _, idx := range pf.Recipients {
 		ct := c.Contacts[idx]
@@ -64,18 +64,21 @@ func (r *Runner) Run(ctx context.Context, c Campaign, sink ProgressSink) Campaig
 		})
 	}
 
-	final := r.execute(ctx, c, results, allIndices(len(results)), sink)
+	final := r.execute(ctx, c, results, allIndices(len(results)), sink, "initial")
 	final.Preflight = &pf
-	return final
+	return r.withTiming(final, started)
 }
 
-// Retry re-sends to recipients whose latest attempt failed (or a provided
-// subset of contact indices), appending new attempt records without
-// double-counting prior successes.
+// Retry re-sends recipients whose latest attempt failed. It always performs a
+// fresh preflight against only the actual retry target set before sending. This
+// catches sender, suppression, attachment, template, and address changes that
+// occurred after the original run while preserving historical attempts.
 func (r *Runner) Retry(ctx context.Context, c Campaign, prev CampaignResult, only []int, sink ProgressSink) CampaignResult {
+	started := r.clock.Now()
 	if sink == nil {
 		sink = nopSink{}
 	}
+
 	results := make([]RecipientResult, len(prev.RecipientResults))
 	copy(results, prev.RecipientResults)
 
@@ -84,7 +87,8 @@ func (r *Runner) Retry(ctx context.Context, c Campaign, prev CampaignResult, onl
 		onlySet[i] = true
 	}
 
-	var targets []int
+	candidatePositions := make([]int, 0)
+	retryContacts := make([]models.Contact, 0)
 	for pos, rr := range results {
 		if !rr.lastFailed() {
 			continue
@@ -92,16 +96,50 @@ func (r *Runner) Retry(ctx context.Context, c Campaign, prev CampaignResult, onl
 		if len(onlySet) > 0 && !onlySet[rr.ContactIndex] {
 			continue
 		}
-		targets = append(targets, pos)
+		if rr.ContactIndex < 0 || rr.ContactIndex >= len(c.Contacts) {
+			continue
+		}
+		candidatePositions = append(candidatePositions, pos)
+		retryContacts = append(retryContacts, c.Contacts[rr.ContactIndex])
 	}
 
-	final := r.execute(ctx, c, results, targets, sink)
-	final.Preflight = prev.Preflight
-	return final
+	if len(candidatePositions) == 0 {
+		out := CampaignResult{
+			State:            CampaignPreflightFailed,
+			FatalError:       "no failed recipients are eligible for retry",
+			RecipientResults: results,
+		}
+		tally(&out)
+		return r.withTiming(out, started)
+	}
+
+	retryCampaign := c
+	retryCampaign.Contacts = retryContacts
+	pf := r.preflight.Preflight(ctx, retryCampaign, r.sender)
+	if !pf.CanSend {
+		out := CampaignResult{
+			State:            CampaignPreflightFailed,
+			RecipientResults: results,
+			Preflight:        &pf,
+		}
+		tally(&out)
+		return r.withTiming(out, started)
+	}
+
+	targets := make([]int, 0, len(pf.Recipients))
+	for _, retryIdx := range pf.Recipients {
+		if retryIdx >= 0 && retryIdx < len(candidatePositions) {
+			targets = append(targets, candidatePositions[retryIdx])
+		}
+	}
+
+	final := r.execute(ctx, c, results, targets, sink, "retry")
+	final.Preflight = &pf
+	return r.withTiming(final, started)
 }
 
 // execute sends to the recipient positions in targets, recording attempts.
-func (r *Runner) execute(ctx context.Context, c Campaign, results []RecipientResult, targets []int, sink ProgressSink) CampaignResult {
+func (r *Runner) execute(ctx context.Context, c Campaign, results []RecipientResult, targets []int, sink ProgressSink, trigger string) CampaignResult {
 	renderer := NewRenderer(c)
 	if r.stat != nil {
 		renderer.withStat(r.stat)
@@ -114,7 +152,7 @@ func (r *Runner) execute(ctx context.Context, c Campaign, results []RecipientRes
 	cancelRemaining := func(from int, status RecipientStatus) {
 		for j := from; j < len(targets); j++ {
 			pos := targets[j]
-			r.appendAttempt(&results[pos], status, "")
+			r.appendAttempt(&results[pos], status, "", trigger)
 		}
 	}
 
@@ -125,7 +163,6 @@ func (r *Runner) execute(ctx context.Context, c Campaign, results []RecipientRes
 			break
 		}
 
-		// Inter-message delay (skipped before the very first send).
 		if i > 0 && opts.DelayBetweenMessages > 0 {
 			if err := r.clock.Sleep(ctx, opts.DelayBetweenMessages); err != nil {
 				cancelRemaining(i, RecipientCancelled)
@@ -133,7 +170,6 @@ func (r *Runner) execute(ctx context.Context, c Campaign, results []RecipientRes
 				break
 			}
 		}
-		// Batch pause.
 		if opts.BatchSize > 0 && i > 0 && i%opts.BatchSize == 0 && opts.PauseBetweenBatches > 0 {
 			if err := r.clock.Sleep(ctx, opts.PauseBetweenBatches); err != nil {
 				cancelRemaining(i, RecipientCancelled)
@@ -148,9 +184,16 @@ func (r *Runner) execute(ctx context.Context, c Campaign, results []RecipientRes
 		msg := renderer.Render(c, c.Contacts[rr.ContactIndex])
 		receipt := r.sender.Send(ctx, msg)
 
-		if receipt.Fatal {
+		if receipt.Kind == SendErrorCancelled {
+			r.appendAttempt(rr, RecipientCancelled, receiptError(receipt), trigger)
+			cancelRemaining(i+1, RecipientCancelled)
+			state = CampaignCancelled
+			break
+		}
+
+		if receipt.Fatal || receipt.Kind == SendErrorFatal {
 			errMsg := receiptError(receipt)
-			r.appendAttempt(rr, RecipientFailed, errMsg)
+			r.appendAttempt(rr, RecipientFailed, errMsg, trigger)
 			sink.Progress(Progress{Current: i + 1, Total: total, Status: "failure", Email: rr.Email, Message: errMsg})
 			cancelRemaining(i+1, RecipientCancelled)
 			state = CampaignRuntimeFailed
@@ -159,14 +202,15 @@ func (r *Runner) execute(ctx context.Context, c Campaign, results []RecipientRes
 		}
 
 		if receipt.Submitted {
-			r.appendAttempt(rr, RecipientSubmitted, "")
+			r.appendAttempt(rr, RecipientSubmitted, "", trigger)
 			sink.Progress(Progress{Current: i + 1, Total: total, Status: "success", Email: rr.Email})
 		} else {
 			errMsg := receiptError(receipt)
-			r.appendAttempt(rr, RecipientFailed, errMsg)
+			r.appendAttempt(rr, RecipientFailed, errMsg, trigger)
 			sink.Progress(Progress{Current: i + 1, Total: total, Status: "failure", Email: rr.Email, Message: errMsg})
 			if !opts.ContinueOnError {
 				cancelRemaining(i+1, RecipientSkipped)
+				state = CampaignStoppedOnFailure
 				break
 			}
 		}
@@ -174,19 +218,30 @@ func (r *Runner) execute(ctx context.Context, c Campaign, results []RecipientRes
 
 	out := CampaignResult{State: state, FatalError: fatalErr, RecipientResults: results}
 	tally(&out)
-	sink.Progress(Progress{Current: total, Total: total, Status: "complete",
-		Message: summaryMessage(out)})
+	if out.State == CampaignCompleted && out.Failed > 0 {
+		out.State = CampaignCompletedWithFailures
+	}
+	sink.Progress(Progress{Current: total, Total: total, Status: "complete", Message: summaryMessage(out)})
 	return out
 }
 
-func (r *Runner) appendAttempt(rr *RecipientResult, status RecipientStatus, errMsg string) {
+func (r *Runner) appendAttempt(rr *RecipientResult, status RecipientStatus, errMsg, trigger string) {
 	rr.Attempts = append(rr.Attempts, Attempt{
 		Number:    len(rr.Attempts) + 1,
 		Status:    status,
 		Error:     errMsg,
+		Trigger:   trigger,
 		Timestamp: r.clock.Now(),
 	})
 	rr.Status = status
+}
+
+func (r *Runner) withTiming(out CampaignResult, started time.Time) CampaignResult {
+	finished := r.clock.Now()
+	out.StartedAt = started
+	out.FinishedAt = finished
+	out.Duration = finished.Sub(started)
+	return out
 }
 
 // tally recomputes counters from final recipient statuses so retries never
