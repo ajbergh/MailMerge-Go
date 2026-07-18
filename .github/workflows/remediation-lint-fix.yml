@@ -1,0 +1,35 @@
+name: Remediation Lint Fix
+
+on:
+  push:
+    branches:
+      - agent/post-pr-full-remediation
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/post-pr-full-remediation
+      - name: Apply verified lint fixes
+        shell: bash
+        run: |
+          patch --dry-run -p1 < .github/remediation/lint-fixes.patch
+          patch -p1 < .github/remediation/lint-fixes.patch
+          gofmt -w \
+            backend/services/atomic.go \
+            backend/services/file_service.go \
+            backend/services/services_test.go \
+            backend/graph/doc.go \
+            backend/campaign/runner.go
+          git rm .github/remediation/lint-fixes.patch .github/workflows/remediation-lint-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(go): resolve lint findings without suppressions"
+          git push origin HEAD:agent/post-pr-full-remediation
