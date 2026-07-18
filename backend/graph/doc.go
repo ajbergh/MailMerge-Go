@@ -23,7 +23,7 @@ import (
 )
 
 // ErrNotImplemented is returned by the stub sender until Graph support lands.
-var ErrNotImplemented = errors.New("Microsoft Graph sender is not implemented yet")
+var ErrNotImplemented = errors.New("microsoft Graph sender is not implemented yet")
 
 // Config holds the (future) Graph sender configuration. Tokens are never stored
 // in plaintext; TokenStore is expected to use the OS credential store / DPAPI.

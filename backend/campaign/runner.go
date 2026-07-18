@@ -26,11 +26,6 @@ func WithClock(c Clock) RunnerOption { return func(r *Runner) { r.clock = c } }
 // WithPreflighter sets the preflighter (default NewPreflighter).
 func WithPreflighter(p *Preflighter) RunnerOption { return func(r *Runner) { r.preflight = p } }
 
-// withStat overrides filesystem stat (tests).
-func withStat(fn func(string) (os.FileInfo, error)) RunnerOption {
-	return func(r *Runner) { r.stat = fn }
-}
-
 // NewRunner builds a Runner.
 func NewRunner(sender EmailSender, opts ...RunnerOption) *Runner {
 	r := &Runner{sender: sender, clock: RealClock{}, preflight: NewPreflighter(), stat: os.Stat}
