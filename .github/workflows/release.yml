@@ -13,6 +13,9 @@ env:
   GO_VERSION: "1.24.x"
   NODE_VERSION: "22.23.1"
   WAILS_VERSION: "v2.11.0"
+  CYCLONEDX_GOMOD_VERSION: "v1.10.0"
+  WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+  WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
 
 jobs:
   release:
@@ -28,8 +31,11 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+      - name: Install release tools
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@${{ env.CYCLONEDX_GOMOD_VERSION }}
       - name: Frontend deps
         working-directory: frontend
         run: npm ci
@@ -39,16 +45,55 @@ jobs:
           $ver = "${{ github.ref_name }}"
           $date = (Get-Date -Format "yyyy-MM-dd")
           wails build -platform windows/amd64 -ldflags "-X main.Version=$ver -X main.Commit=${{ github.sha }} -X main.BuildDate=$date"
+      - name: Generate CycloneDX SBOMs
+        shell: pwsh
+        run: |
+          cyclonedx-gomod mod -json -output build/bin/backend.cdx.json
+          Push-Location frontend
+          npm sbom --omit=dev --sbom-format=cyclonedx | Out-File ../build/bin/frontend.cdx.json -Encoding utf8
+          Pop-Location
+      - name: Write release manifest
+        shell: pwsh
+        run: |
+          $manifest = [ordered]@{
+            version = "${{ github.ref_name }}"
+            commit = "${{ github.sha }}"
+            buildDate = (Get-Date -Format "yyyy-MM-dd")
+            goVersion = "${{ env.GO_VERSION }}"
+            nodeVersion = "${{ env.NODE_VERSION }}"
+            wailsVersion = "${{ env.WAILS_VERSION }}"
+            signed = [bool]($env:WINDOWS_CERT_PFX_BASE64)
+          }
+          $manifest | ConvertTo-Json | Out-File build/bin/release-manifest.json -Encoding utf8
+      - name: Sign executable (optional)
+        if: env.WINDOWS_CERT_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "mailmerge-go-signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signTool) { throw "signtool.exe was not found on the runner" }
+          Get-ChildItem build/bin/*.exe | ForEach-Object {
+            & $signTool.FullName sign /fd SHA256 /f $certPath /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $($_.Name)" }
+          }
+          Remove-Item $certPath -Force
       - name: Checksums
         shell: pwsh
         run: |
-          Get-ChildItem build/bin/*.exe | ForEach-Object {
-            (Get-FileHash $_.FullName -Algorithm SHA256).Hash + "  " + $_.Name
-          } | Out-File build/bin/SHA256SUMS.txt -Encoding ascii
+          Get-ChildItem build/bin/* -File |
+            Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+            Sort-Object Name |
+            ForEach-Object {
+              (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + "  " + $_.Name
+            } | Out-File build/bin/SHA256SUMS.txt -Encoding ascii
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             build/bin/*.exe
+            build/bin/*.json
             build/bin/SHA256SUMS.txt
           generate_release_notes: true
