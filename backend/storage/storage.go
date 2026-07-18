@@ -32,6 +32,7 @@ type CampaignRecord struct {
 	SubjectTemplate  string                  `json:"subjectTemplate"`
 	BodyTemplate     string                  `json:"bodyTemplate"`
 	IsHTML           bool                    `json:"isHTML"`
+	DraftOnly        bool                    `json:"draftOnly,omitempty"`
 	Headers          []string                `json:"headers,omitempty"`
 	Contacts         []models.Contact        `json:"contacts,omitempty"`
 	Attachments      []string                `json:"attachments,omitempty"`
