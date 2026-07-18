@@ -1,0 +1,212 @@
+diff -ruN base/frontend/src/components/CampaignHistoryModal.tsx repo/frontend/src/components/CampaignHistoryModal.tsx
+--- base/frontend/src/components/CampaignHistoryModal.tsx	1970-01-01 00:00:00.000000000 +0000
++++ repo/frontend/src/components/CampaignHistoryModal.tsx	2026-07-18 18:16:19.929256826 +0000
+@@ -0,0 +1,73 @@
++import { useState } from 'react';
++import { History, RefreshCw, Trash2, X } from 'lucide-react';
++import type { storage } from '../../wailsjs/go/models';
++
++interface CampaignHistoryModalProps {
++  isOpen: boolean;
++  records: storage.CampaignRecord[];
++  isLoading: boolean;
++  onClose: () => void;
++  onRefresh: () => void;
++  onRetry: (campaignId: string) => void;
++  onDelete: (campaignId: string) => void;
++  onClear: () => void;
++}
++
++export function CampaignHistoryModal({
++  isOpen,
++  records,
++  isLoading,
++  onClose,
++  onRefresh,
++  onRetry,
++  onDelete,
++  onClear,
++}: CampaignHistoryModalProps) {
++  const [confirmClear, setConfirmClear] = useState(false);
++  if (!isOpen) return null;
++  return (
++    <div className="modal-overlay" role="presentation" onMouseDown={(event) => {
++      if (event.target === event.currentTarget) onClose();
++    }}>
++      <section className="modal-content history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
++        <div className="modal-header">
++          <h3 id="history-title"><History size={18} /> Campaign history</h3>
++          <button className="modal-close" onClick={onClose} aria-label="Close campaign history"><X size={18} /></button>
++        </div>
++        <div className="modal-body">
++          <div className="history-actions">
++            <button className="btn btn-secondary btn-sm" onClick={onRefresh} disabled={isLoading}><RefreshCw size={14} /> Refresh</button>
++            {confirmClear ? (
++              <span className="history-clear-confirm">
++                <span>Delete all history?</span>
++                <button className="btn btn-danger btn-sm" onClick={() => { setConfirmClear(false); onClear(); }}>Delete all</button>
++                <button className="btn btn-secondary btn-sm" onClick={() => setConfirmClear(false)}>Cancel</button>
++              </span>
++            ) : (
++              <button className="btn btn-danger btn-sm" onClick={() => setConfirmClear(true)} disabled={records.length === 0}><Trash2 size={14} /> Clear all</button>
++            )}
++          </div>
++          {isLoading ? <p>Loading campaign history…</p> : records.length === 0 ? (
++            <p className="empty-state">No campaign runs have been recorded.</p>
++          ) : (
++            <div className="history-list">
++              {records.map((record) => (
++                <article className="history-row" key={record.id}>
++                  <div className="history-row-main">
++                    <strong>{record.subject || '(No subject)'}</strong>
++                    <span>{new Date(record.startedAt || record.createdAt).toLocaleString()} · Run {record.runNumber || 1}</span>
++                    <span>{record.recipientCount} recipient(s) · {record.state.replaceAll('_', ' ')}</span>
++                  </div>
++                  <div className="history-row-actions">
++                    {record.result?.failed > 0 && <button className="btn btn-secondary btn-sm" onClick={() => onRetry(record.id)}>Retry failed</button>}
++                    <button className="btn btn-outline btn-sm" onClick={() => onDelete(record.id)} aria-label={`Delete campaign ${record.subject}`}><Trash2 size={14} /></button>
++                  </div>
++                </article>
++              ))}
++            </div>
++          )}
++        </div>
++      </section>
++    </div>
++  );
++}
++diff -ruN base/frontend/src/components/ErrorBoundary.tsx repo/frontend/src/components/ErrorBoundary.tsx
++--- base/frontend/src/components/ErrorBoundary.tsx	1970-01-01 00:00:00.000000000 +0000
+++++ repo/frontend/src/components/ErrorBoundary.tsx	2026-07-18 18:16:18.639420057 +0000
++@@ -0,0 +1,36 @@
+++import React from 'react';
+++import { AlertTriangle, RefreshCw } from 'lucide-react';
+++
+++interface ErrorBoundaryState {
+++  hasError: boolean;
+++  message: string;
+++}
+++
+++export class ErrorBoundary extends React.Component<React.PropsWithChildren<Record<string, never>>, ErrorBoundaryState> {
+++  state: ErrorBoundaryState = { hasError: false, message: '' };
+++
+++  static getDerivedStateFromError(error: unknown): ErrorBoundaryState {
+++    return {
+++      hasError: true,
+++      message: error instanceof Error ? error.message : 'An unexpected interface error occurred.',
+++    };
+++  }
+++
+++  componentDidCatch(error: unknown, info: React.ErrorInfo) {
+++    console.error('MailMerge Go UI error', error, info.componentStack);
+++  }
+++
+++  render() {
+++    if (!this.state.hasError) return this.props.children;
+++    return (
+++      <main className="fatal-error" role="alert">
+++        <AlertTriangle size={36} />
+++        <h1>MailMerge Go could not display this screen</h1>
+++        <p>{this.state.message}</p>
+++        <button className="btn btn-primary" onClick={() => window.location.reload()}>
+++          <RefreshCw size={16} /> Reload application
+++        </button>
+++      </main>
+++    );
+++  }
+++}
++diff -ruN base/frontend/src/components/PreflightModal.tsx repo/frontend/src/components/PreflightModal.tsx
++--- base/frontend/src/components/PreflightModal.tsx	1970-01-01 00:00:00.000000000 +0000
+++++ repo/frontend/src/components/PreflightModal.tsx	2026-07-18 18:12:47.068628691 +0000
++@@ -0,0 +1,91 @@
+++import { AlertCircle, AlertTriangle, Clock, Paperclip, Save, Send, Users, X } from 'lucide-react';
+++import type { campaign } from '../../wailsjs/go/models';
+++
+++interface PreflightModalProps {
+++  isOpen: boolean;
+++  result: campaign.PreflightResult | null;
+++  draftOnly: boolean;
+++  totalAttachmentBytes: number;
+++  isSubmitting: boolean;
+++  onClose: () => void;
+++  onConfirm: () => void;
+++}
+++
+++function formatBytes(bytes: number): string {
+++  if (bytes <= 0) return 'None';
+++  const units = ['B', 'KB', 'MB', 'GB'];
+++  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+++  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+++}
+++
+++function formatDuration(nanoseconds: number): string {
+++  const seconds = Math.max(0, Math.round((nanoseconds || 0) / 1_000_000_000));
+++  if (seconds < 60) return `${seconds}s`;
+++  const minutes = Math.floor(seconds / 60);
+++  return `${minutes}m ${seconds % 60}s`;
+++}
+++
+++export function PreflightModal({
+++  isOpen,
+++  result,
+++  draftOnly,
+++  totalAttachmentBytes,
+++  isSubmitting,
+++  onClose,
+++  onConfirm,
+++}: PreflightModalProps) {
+++  if (!isOpen || !result) return null;
+++
+++  return (
+++    <div className="modal-overlay" role="presentation" onMouseDown={(event) => {
+++      if (event.target === event.currentTarget && !isSubmitting) onClose();
+++    }}>
+++      <section className="modal-content preflight-modal" role="dialog" aria-modal="true" aria-labelledby="preflight-title">
+++        <div className="modal-header">
+++          <h3 id="preflight-title"><Send size={18} /> Review campaign</h3>
+++          <button className="modal-close" onClick={onClose} disabled={isSubmitting} aria-label="Close campaign review">
+++            <X size={18} />
+++          </button>
+++        </div>
+++        <div className="modal-body">
+++          <div className="preflight-stats">
+++            <div><Users size={18} /><strong>{result.recipientCount}</strong><span>Recipients</span></div>
+++            <div><Clock size={18} /><strong>{formatDuration(result.estimatedDuration)}</strong><span>Estimated</span></div>
+++            <div><Paperclip size={18} /><strong>{formatBytes(totalAttachmentBytes)}</strong><span>Attachments</span></div>
+++          </div>
+++
+++          {result.errors.length > 0 && (
+++            <section className="preflight-section preflight-errors" aria-labelledby="preflight-errors-title">
+++              <h4 id="preflight-errors-title"><AlertCircle size={16} /> Blocking issues</h4>
+++              <ul>{result.errors.map((issue, index) => <li key={`${issue.code}-${index}`}>{issue.message}</li>)}</ul>
+++            </section>
+++          )}
+++          {result.warnings.length > 0 && (
+++            <section className="preflight-section preflight-warnings" aria-labelledby="preflight-warnings-title">
+++              <h4 id="preflight-warnings-title"><AlertTriangle size={16} /> Warnings</h4>
+++              <ul>{result.warnings.map((issue, index) => <li key={`${issue.code}-${index}`}>{issue.message}</li>)}</ul>
+++            </section>
+++          )}
+++          {result.errors.length === 0 && result.warnings.length === 0 && (
+++            <div className="preflight-ready">Preflight passed with no warnings.</div>
+++          )}
+++
+++          <div className="preflight-mode">
+++            {draftOnly ? <Save size={17} /> : <Send size={17} />}
+++            <div>
+++              <strong>{draftOnly ? 'Draft-only mode' : 'Send mode'}</strong>
+++              <span>{draftOnly ? 'Messages will be saved in Outlook Drafts and will not be sent.' : 'Outlook will submit messages immediately after confirmation.'}</span>
+++            </div>
+++          </div>
+++        </div>
+++        <div className="modal-footer">
+++          <button className="btn btn-secondary" onClick={onClose} disabled={isSubmitting}>Back</button>
+++          <button className="btn btn-success" onClick={onConfirm} disabled={!result.canSend || isSubmitting}>
+++            {draftOnly ? <Save size={16} /> : <Send size={16} />}
+++            {isSubmitting ? 'Starting…' : draftOnly ? `Create ${result.recipientCount} draft(s)` : `Send ${result.recipientCount} message(s)`}
+++          </button>
+++        </div>
+++      </section>
+++    </div>
+++  );
+++}
