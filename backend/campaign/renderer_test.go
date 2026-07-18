@@ -1,6 +1,7 @@
 package campaign
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -36,8 +37,6 @@ func TestRenderEquivalencePreviewTestBulk(t *testing.T) {
 
 	preview := r.Render(c, richContact())
 
-	// Test send: same campaign but with an explicit To override that does not
-	// overwrite the {{email}} merge value.
 	test := c
 	test.ToOverride = "qa@example.com"
 	testMsg := NewRenderer(test).Render(test, richContact())
@@ -53,7 +52,6 @@ func TestRenderEquivalencePreviewTestBulk(t *testing.T) {
 	if strings.Join(preview.CC, ",") != strings.Join(bulk.CC, ",") {
 		t.Errorf("CC differ")
 	}
-	// The test send goes to the override, but merge data (body) is unchanged.
 	if len(testMsg.To) == 0 || !strings.Contains(testMsg.To[0], "qa@example.com") {
 		t.Errorf("test To = %v, want qa override", testMsg.To)
 	}
@@ -62,7 +60,7 @@ func TestRenderEquivalencePreviewTestBulk(t *testing.T) {
 func TestRenderTestSendDoesNotOverwriteEmailByDefault(t *testing.T) {
 	c := richCampaign()
 	c.BodyTemplate = "Your email is {{email}}"
-	c.ToOverride = "qa@example.com" // OverrideEmail defaults to false
+	c.ToOverride = "qa@example.com"
 	msg := NewRenderer(c).Render(c, richContact())
 	if !strings.Contains(msg.TextBody, "ada@example.com") {
 		t.Errorf("{{email}} should still render the contact address, got %q", msg.TextBody)
@@ -106,8 +104,36 @@ func TestRenderHTMLBodyEscapesMergeValues(t *testing.T) {
 	if !strings.Contains(msg.HTMLBody, "&lt;b&gt;") {
 		t.Errorf("expected escaped value in HTML body: %q", msg.HTMLBody)
 	}
-	// The authored <p> markup is preserved (normalization may add inline styles).
 	if !strings.Contains(msg.HTMLBody, "<p") {
 		t.Errorf("template markup should be preserved: %q", msg.HTMLBody)
+	}
+}
+
+func TestRendererCachesResolvedAttachmentMetadata(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "static-attachment-*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c := richCampaign()
+	c.Attachments = []string{path}
+	calls := 0
+	r := NewRenderer(c).withStat(func(p string) (os.FileInfo, error) {
+		calls++
+		return os.Stat(p)
+	})
+
+	r.Render(c, richContact())
+	ct2 := richContact()
+	ct2.ID = "2"
+	ct2.Email = "grace@example.com"
+	r.Render(c, ct2)
+
+	if calls != 1 {
+		t.Fatalf("static attachment stat calls = %d, want 1", calls)
 	}
 }
