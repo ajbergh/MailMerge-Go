@@ -57,11 +57,3 @@ func (a *App) progressSink() campaign.ProgressSink {
 """
 text = text[:progress_comment] + progress + text[helpers_marker:]
 app_path.write_text(text)
-
-ci_path = Path(".github/workflows/ci.yml")
-ci = ci_path.read_text()
-marker = "\n  apply-progress-emitter-remediation:\n"
-index = ci.find(marker)
-if index < 0:
-    raise SystemExit("self-removal marker not found")
-ci_path.write_text(ci[:index] + "\n")
