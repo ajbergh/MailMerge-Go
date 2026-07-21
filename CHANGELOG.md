@@ -4,79 +4,94 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
-## [Unreleased] — Release hardening
+## [Unreleased] — Full remediation and release hardening
 
 ### Added
+
+- Canonical merge-field support through `backend/mergefield`, including
+  `{{field_id}}`, `{{field|fallback}}`, legacy `{Field}` compatibility, collision
+  detection, structured diagnostics, and support for Unicode and punctuated column
+  names.
+- `net/mail`-based email validation, address-list parsing, and explicit duplicate
+  policy handling through `backend/email`.
+- A platform-independent campaign engine with a single renderer, full preflight,
+  cancellation, validated send options, typed campaign states, per-recipient
+  attempt history, and deterministic fake-sender tests.
+- A classic-Outlook COM sender running on a dedicated STA worker, with actionable
+  readiness reporting and a non-Windows stub.
+- HTML normalization and sanitization, plus DOMPurify-sanitized previews in a
+  sandboxed iframe.
+- Local suppression-list and campaign-history repositories.
 - Persisted immutable campaign snapshots with durable campaign IDs, parent/child
   retry lineage, run numbers, and retry-after-restart support.
-- Campaign-history UI with refresh, retry-failed, delete-one, and clear-all actions.
-- Accessible test-send workflow with independent destination and merge-data contact,
-  optional `{{email}}` replacement, rendered preview, and save-to-Drafts mode.
+- Campaign History UI with refresh, retry-failed, delete-one, and clear-all actions.
+- An accessible test-send workflow with independent destination and merge-data
+  contact, optional `{{email}}` replacement, rendered preview, and Outlook Drafts
+  mode.
 - Structured preflight review showing recipients, warnings, blocking errors,
   estimated duration, attachment size, and delivery mode.
-- Application error boundary and Windows-aware attachment-path deduplication.
-- Backend and frontend coverage artifacts in CI.
-- CycloneDX SBOM generation for Go and frontend dependencies.
-- Manual release-candidate workflow and a documented release go/no-go checklist.
-- Tagged-release manifest, expanded checksums, and optional Authenticode signing
-  hooks driven by repository secrets.
+- Draft-only delivery for test messages and full campaigns.
+- An application error boundary and Windows-aware attachment-path deduplication.
+- Backend and frontend CI coverage artifacts.
+- CycloneDX SBOM generation for Go and frontend production dependencies.
+- A manual Release Candidate workflow and documented release go/no-go checklist.
+- Tagged-release manifests, comprehensive SHA-256 checksums, and optional
+  Authenticode signing hooks driven by repository secrets.
+- Windows root-package tests covering persisted retries, immutable snapshots,
+  draft-mode persistence, and headless campaign execution.
+- Architecture, merge-field, campaign-lifecycle, Outlook compatibility, testing,
+  security, release-evidence, and future Graph-sender documentation.
 
 ### Changed
-- Migrated golangci-lint to its v2 configuration and action line.
-- Made `govulncheck` and production npm audit blocking release gates.
-- Corrected campaign result semantics for partial failure, stopped-on-failure,
-  cancellation, preflight failure, and runtime failure.
-- Hardened Outlook COM startup, error classification, and worker shutdown.
-- Corrected Outlook capability reporting so unsupported account/shared-mailbox
-  selection is not advertised.
-- Campaign history now performs legacy-record normalization and atomic durable writes.
-- Replaced browser prompt/confirm send flows with accessible application dialogs.
-- Synchronized the frontend lockfile and pinned Node 22.23.1 across CI and release.
+
+- `SendBulkEmails` now returns a typed `CampaignResult`; Outlook COM is isolated
+  from application services behind `campaign.EmailSender`.
+- Preview, test send, and campaign execution use the same backend renderer.
+- Campaign result semantics distinguish completed, completed-with-failures,
+  stopped-on-failure, cancelled, preflight-failed, and runtime-failed outcomes.
+- Retry selects only recipients whose latest attempt failed and performs fresh
+  preflight against the current environment.
+- Campaign history now performs legacy-record normalization and atomic durable
+  writes.
+- Settings and templates use validated atomic persistence with schema migration.
+- Contact import handles UTF-8 BOMs, stable contact IDs, duplicate headers, blank
+  rows, and file/row/column limits.
+- Outlook COM startup, error classification, capability reporting, cancellation,
+  and worker shutdown are hardened.
+- Unsupported sender-account and shared-mailbox selection are no longer advertised.
+- Browser prompt/confirm send flows were replaced with accessible application
+  dialogs.
+- Frontend sending uses persisted campaign IDs for restart-safe retry.
+- Attachment metadata is cached per resolved path during rendering and preflight.
+- Send pacing is sourced from validated settings instead of a hard-coded delay.
+- The frontend toolchain was upgraded to Vite 8, Vitest 4, and TypeScript 6.
+- Wails timestamp bindings expose RFC 3339 JSON timestamps as TypeScript strings.
+- Wails frontend installs use `npm ci`, the lockfile is synchronized, and Node
+  22.23.1 is pinned across CI and release workflows.
+- golangci-lint was migrated to the v2 configuration and action line.
+- `govulncheck` and production npm audit are blocking release gates.
+- Linux, macOS, and Windows build entry points are documented consistently while
+  Outlook sending remains Windows-only.
+- README and contributor documentation now describe campaign history, draft mode,
+  local-data retention, CI evidence, and the distinction between merge readiness
+  and manual release validation.
 
 ### Security
-- Dependency scans now fail CI on reachable Go vulnerabilities or high-severity
+
+- Imported values are escaped before insertion into HTML messages, and authored
+  HTML is sanitized before preview and send.
+- Dependency scans fail CI on reachable Go vulnerabilities or high-severity
   production npm findings.
-- Release artifacts include dependency SBOMs and SHA-256 checksums.
-
-## [Unreleased] — Initial remediation foundation
-
-### Added
-- Canonical merge-field system (`backend/mergefield`): `{{field_id}}` and legacy
-  `{Field}` syntax, `{{field|fallback}}`, collision detection, Unicode/space/hyphen
-  support, structured diagnostics.
-- `net/mail`-based email validation and address-list parsing (`backend/email`),
-  with an explicit duplicate-resolution policy.
-- Campaign engine (`backend/campaign`): `EmailSender` interface, deterministic
-  `FakeSender`, single `Renderer`, full preflight, context-cancellable runner with
-  an injectable clock, typed `CampaignResult` with per-recipient attempt history,
-  validated `SendOptions`.
-- Classic-Outlook COM sender on a dedicated STA worker thread (`backend/outlook`),
-  with a non-Windows stub and actionable capability detection.
-- HTML sanitization (bluemonday) + email normalization (`backend/htmlutil`);
-  DOMPurify-sanitized, sandboxed previews.
-- Local suppression list and campaign history (repository interface + JSON store).
-- Atomic, validated persistence for settings and templates; settings schema
-  versioning/migration.
-- Contact import improvements: UTF-8 BOM handling, stable contact IDs, duplicate
-  header detection, blank-row skipping, size/row/column limits.
-- Frontend: preflight-gated sending, Cancel, backend-driven previews, stable-ID
-  selection, attachment size wiring, accessibility labels, Vitest tests.
-- GitHub Actions CI + tag-based release; reproducible version stamping (ldflags);
-  `npm ci` in build.
-- Documentation: architecture, merge fields, campaign lifecycle, Outlook
-  compatibility, testing, security, Graph sender design; CONTRIBUTING/SECURITY.
-
-### Changed
-- Aligned the Wails module with the pinned v2.11.0 CLI, switched Wails frontend
-  installs to `npm ci`, and added Windows, Linux, and macOS build entry points.
-- Upgraded the frontend build/test toolchain to Vite 8, Vitest 4, and TypeScript
-  6; Wails timestamp bindings expose RFC 3339 JSON timestamps as TypeScript strings.
-- `SendBulkEmails` returns a typed `CampaignResult`; Outlook COM is isolated from
-  `backend/services`.
-- Removed the hard-coded 500 ms send delay; pacing is sourced from settings.
-- README corrected: no unqualified production-ready claim, Go 1.24, and New Outlook
-  is unsupported for sending.
+- Template and campaign identifiers are validated against path traversal.
+- Release artifacts include CycloneDX SBOMs, a release manifest, and SHA-256
+  checksums.
+- Authenticode signing is optional and uses repository secrets; certificate and
+  password material is never stored in the repository.
 
 ### Removed
-- Unused `@tanstack/react-table` frontend dependency.
-- Hard-coded application version/author metadata in favor of build-time values.
+
+- The unused `@tanstack/react-table` frontend dependency.
+- The hard-coded 500 ms send delay.
+- Hard-coded application version and author metadata in favor of build-time values.
+- Unqualified production-readiness claims and unsupported New Outlook capability
+  claims.
