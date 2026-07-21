@@ -11,6 +11,7 @@
 import React from 'react'
 import {createRoot} from 'react-dom/client'
 import App from './App'
+import {ErrorBoundary} from './components'
 
 // Get the root DOM element
 const container = document.getElementById('root')
@@ -21,6 +22,8 @@ const root = createRoot(container!)
 // Render the application with StrictMode for development checks
 root.render(
     <React.StrictMode>
-        <App/>
+        <ErrorBoundary>
+            <App/>
+        </ErrorBoundary>
     </React.StrictMode>
 )

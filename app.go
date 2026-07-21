@@ -47,10 +47,12 @@ type App struct {
 	settingsService *services.SettingsService    // Handles app settings persistence
 	suppression     *services.SuppressionService // Suppression / unsubscribe list
 	history         storage.CampaignRepository   // Campaign run history (JSON-backed)
+	emitProgress    func(models.ProgressUpdate)  // Set only from the Wails lifecycle context
 
-	mu         sync.Mutex         // guards cancel and lastResult
-	cancel     context.CancelFunc // cancels the in-flight campaign, if any
-	lastResult *campaign.CampaignResult
+	mu             sync.Mutex         // guards cancel and lastResult
+	cancel         context.CancelFunc // cancels the in-flight campaign, if any
+	lastResult     *campaign.CampaignResult
+	lastCampaignID string
 
 	version   string // build-time version metadata
 	commit    string
@@ -99,24 +101,55 @@ func NewApp() *App {
 	}
 }
 
-// recordRun persists a terminal campaign result to history (best effort).
-func (a *App) recordRun(subject string, isHTML bool, res campaign.CampaignResult) {
+// persistRun stores an immutable campaign snapshot and returns the result with
+// durable campaign lineage metadata. Persistence is best-effort: a send result is
+// still returned when history storage is unavailable, but retry-by-ID will not be
+// available for that run.
+func (a *App) persistRun(c campaign.Campaign, res campaign.CampaignResult, parentID string, runNumber int) campaign.CampaignResult {
 	if a.history == nil {
-		return
+		return res
 	}
+	if runNumber < 1 {
+		runNumber = 1
+	}
+
+	id := uuid.NewString()
+	res.CampaignID = id
+	res.ParentCampaignID = parentID
+	res.RunNumber = runNumber
+
 	rec := storage.CampaignRecord{
-		ID:             uuid.NewString(),
-		StartedAt:      time.Now(),
-		FinishedAt:     time.Now(),
-		Subject:        subject,
-		IsHTML:         isHTML,
-		RecipientCount: res.Attempted + res.Skipped + res.Cancelled,
-		State:          res.State,
-		Result:         res,
+		ID:               id,
+		ParentCampaignID: parentID,
+		RunNumber:        runNumber,
+		CreatedAt:        time.Now(),
+		StartedAt:        res.StartedAt,
+		FinishedAt:       res.FinishedAt,
+		Duration:         res.Duration,
+		Subject:          c.SubjectTemplate,
+		SubjectTemplate:  c.SubjectTemplate,
+		BodyTemplate:     c.BodyTemplate,
+		IsHTML:           c.IsHTML,
+		DraftOnly:        c.DraftOnly,
+		Headers:          cloneStrings(c.Headers),
+		Contacts:         cloneContacts(c.Contacts),
+		Attachments:      cloneStrings(c.Attachments),
+		CCTemplate:       c.CCTemplate,
+		BCCTemplate:      c.BCCTemplate,
+		DuplicatePolicy:  c.DuplicatePolicy,
+		SendOptions:      c.Options,
+		SenderType:       string(campaign.StateClassicOutlook),
+		RecipientCount:   len(c.Contacts),
+		State:            res.State,
+		Result:           res,
 	}
-	if err := a.history.Save(rec); err != nil {
+	if err := a.history.Create(rec); err != nil {
 		fmt.Printf("Warning: failed to record campaign run: %v\n", err)
+		res.CampaignID = ""
+		res.ParentCampaignID = ""
+		res.RunNumber = 0
 	}
+	return res
 }
 
 // GetCampaignHistory returns past campaign runs, newest first.
@@ -131,10 +164,99 @@ func (a *App) GetCampaignHistory() []storage.CampaignRecord {
 	return records
 }
 
+// GetCampaign returns the immutable snapshot for one campaign run.
+func (a *App) GetCampaign(id string) (*storage.CampaignRecord, error) {
+	if a.history == nil {
+		return nil, fmt.Errorf("campaign history is unavailable")
+	}
+	return a.history.Get(id)
+}
+
+// DeleteCampaign deletes one campaign-history record. It never deletes linked
+// parent or child runs implicitly.
+func (a *App) DeleteCampaign(id string) error {
+	if a.history == nil {
+		return fmt.Errorf("campaign history is unavailable")
+	}
+	if err := a.history.Delete(id); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	if a.lastCampaignID == id {
+		a.lastCampaignID = ""
+		a.lastResult = nil
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+// ClearCampaignHistory deletes every local campaign-history record.
+func (a *App) ClearCampaignHistory() error {
+	if a.history == nil {
+		return fmt.Errorf("campaign history is unavailable")
+	}
+	records, err := a.history.List()
+	if err != nil {
+		return err
+	}
+	for _, rec := range records {
+		if err := a.history.Delete(rec.ID); err != nil {
+			return fmt.Errorf("delete campaign %s: %w", rec.ID, err)
+		}
+	}
+	a.mu.Lock()
+	a.lastCampaignID = ""
+	a.lastResult = nil
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *App) campaignFromRecord(rec storage.CampaignRecord) campaign.Campaign {
+	var suppressed map[string]bool
+	if a.suppression != nil {
+		suppressed = a.suppression.Set()
+	}
+	return campaign.Campaign{
+		Headers:         cloneStrings(rec.Headers),
+		Contacts:        cloneContacts(rec.Contacts),
+		SubjectTemplate: rec.SubjectTemplate,
+		BodyTemplate:    rec.BodyTemplate,
+		IsHTML:          rec.IsHTML,
+		DraftOnly:       rec.DraftOnly,
+		Attachments:     cloneStrings(rec.Attachments),
+		CCTemplate:      rec.CCTemplate,
+		BCCTemplate:     rec.BCCTemplate,
+		Options:         rec.SendOptions.Normalized(),
+		DuplicatePolicy: rec.DuplicatePolicy,
+		Suppressed:      suppressed,
+	}
+}
+
+func cloneStrings(in []string) []string {
+	return append([]string(nil), in...)
+}
+
+func cloneContacts(in []models.Contact) []models.Contact {
+	out := make([]models.Contact, len(in))
+	for i, contact := range in {
+		out[i] = contact
+		if contact.CustomFields != nil {
+			out[i].CustomFields = make(map[string]string, len(contact.CustomFields))
+			for key, value := range contact.CustomFields {
+				out[i].CustomFields[key] = value
+			}
+		}
+	}
+	return out
+}
+
 // startup is called when the app starts. It receives the Wails context
 // which is used for runtime operations like dialogs and events.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.emitProgress = func(update models.ProgressUpdate) {
+		runtime.EventsEmit(ctx, "email:progress", update)
+	}
 }
 
 // shutdown releases the Outlook COM worker cleanly.
@@ -336,6 +458,7 @@ func (a *App) SendTestEmail(request models.TestEmailRequest) error {
 		SubjectTemplate: request.SubjectTemplate,
 		BodyTemplate:    request.BodyTemplate,
 		IsHTML:          request.IsHTML,
+		DraftOnly:       request.DraftOnly,
 		Attachments:     request.Attachments,
 		CCTemplate:      firstNonEmpty(request.CCTemplate, request.CC),
 		BCCTemplate:     firstNonEmpty(request.BCCTemplate, request.BCC),
@@ -372,20 +495,54 @@ func (a *App) SendBulkEmails(request models.EmailRequest) campaign.CampaignResul
 	defer a.endRun(cancel)
 
 	res := a.runner.Run(ctx, c, a.progressSink())
+	res = a.persistRun(c, res, "", 1)
 
 	a.mu.Lock()
 	a.lastResult = &res
+	a.lastCampaignID = res.CampaignID
 	a.mu.Unlock()
-	a.recordRun(request.SubjectTemplate, request.IsHTML, res)
 	return res
 }
 
-// RetryFailed retries only the recipients whose latest attempt failed in the
-// last campaign, appending new attempts without double-counting successes.
+// RetryCampaign reconstructs a campaign from its persisted immutable snapshot,
+// performs fresh preflight against the current environment, and persists the retry
+// as a new child record. This remains safe after an application restart.
+func (a *App) RetryCampaign(campaignID string) campaign.CampaignResult {
+	if a.history == nil {
+		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: "campaign history is unavailable"}
+	}
+	rec, err := a.history.Get(campaignID)
+	if err != nil {
+		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: fmt.Sprintf("load campaign %s: %v", campaignID, err)}
+	}
+	c := a.campaignFromRecord(*rec)
+	if len(c.Contacts) == 0 {
+		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: "stored campaign does not contain recipient data"}
+	}
+
+	ctx, cancel := a.beginRun()
+	defer a.endRun(cancel)
+
+	res := a.runner.Retry(ctx, c, rec.Result, nil, a.progressSink())
+	res = a.persistRun(c, res, rec.ID, rec.RunNumber+1)
+
+	a.mu.Lock()
+	a.lastResult = &res
+	a.lastCampaignID = res.CampaignID
+	a.mu.Unlock()
+	return res
+}
+
+// RetryFailed is retained for Wails/API compatibility. New callers should use
+// RetryCampaign with the CampaignID returned by SendBulkEmails.
 func (a *App) RetryFailed(request models.EmailRequest) campaign.CampaignResult {
 	a.mu.Lock()
+	campaignID := a.lastCampaignID
 	prev := a.lastResult
 	a.mu.Unlock()
+	if campaignID != "" {
+		return a.RetryCampaign(campaignID)
+	}
 	if prev == nil {
 		return campaign.CampaignResult{State: campaign.CampaignPreflightFailed, FatalError: "no previous campaign to retry"}
 	}
@@ -395,7 +552,6 @@ func (a *App) RetryFailed(request models.EmailRequest) campaign.CampaignResult {
 	defer a.endRun(cancel)
 
 	res := a.runner.Retry(ctx, c, *prev, nil, a.progressSink())
-
 	a.mu.Lock()
 	a.lastResult = &res
 	a.mu.Unlock()
@@ -415,7 +571,11 @@ func (a *App) CancelCampaign() {
 
 // beginRun creates a cancelable context for a campaign and stores its cancel func.
 func (a *App) beginRun() (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(a.ctx)
+	base := a.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
 	a.mu.Lock()
 	a.cancel = cancel
 	a.mu.Unlock()
@@ -442,6 +602,7 @@ func (a *App) buildCampaign(request models.EmailRequest, applySuppression bool) 
 		SubjectTemplate: request.SubjectTemplate,
 		BodyTemplate:    request.BodyTemplate,
 		IsHTML:          request.IsHTML,
+		DraftOnly:       request.DraftOnly,
 		Attachments:     request.Attachments,
 		CCTemplate:      firstNonEmpty(request.CCTemplate, request.CC),
 		BCCTemplate:     firstNonEmpty(request.BCCTemplate, request.BCC),
@@ -471,14 +632,16 @@ func (a *App) duplicatePolicy() email.Policy {
 	return email.DefaultPolicy
 }
 
-// progressSink forwards campaign progress to the frontend's "email:progress"
-// event channel (unchanged payload shape).
+// progressSink forwards campaign progress through an emitter created only
+// from the Wails lifecycle context. Headless execution and tests intentionally
+// operate without an emitter.
 func (a *App) progressSink() campaign.ProgressSink {
 	return campaign.ProgressFunc(func(p campaign.Progress) {
-		if a.ctx == nil {
+		emit := a.emitProgress
+		if emit == nil {
 			return
 		}
-		runtime.EventsEmit(a.ctx, "email:progress", models.ProgressUpdate{
+		emit(models.ProgressUpdate{
 			Current:   p.Current,
 			Total:     p.Total,
 			Status:    p.Status,

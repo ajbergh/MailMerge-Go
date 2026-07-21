@@ -98,7 +98,7 @@ func (fs *FileService) parseCSV(filePath string) (*models.ParseResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open CSV file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader := csv.NewReader(file)
 
@@ -201,12 +201,12 @@ func (fs *FileService) parseExcel(filePath string) (*models.ParseResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Excel file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Get the first sheet
 	sheets := f.GetSheetList()
 	if len(sheets) == 0 {
-		return nil, fmt.Errorf("Excel file contains no sheets")
+		return nil, fmt.Errorf("excel file contains no sheets")
 	}
 
 	rows, err := f.GetRows(sheets[0])
@@ -215,7 +215,7 @@ func (fs *FileService) parseExcel(filePath string) (*models.ParseResult, error) 
 	}
 
 	if len(rows) == 0 {
-		return nil, fmt.Errorf("Excel sheet is empty")
+		return nil, fmt.Errorf("excel sheet is empty")
 	}
 
 	if len(rows[0]) > MaxImportColumns {
@@ -279,13 +279,13 @@ func (fs *FileService) findColumnIndices(header []string) map[string]int {
 			normalized = strings.ReplaceAll(normalized, sep, "")
 		}
 
-		// Handle various column name formats
-		switch {
-		case normalized == "firstname" || normalized == "fname" || normalized == "givenname":
+		// Handle various column name formats.
+		switch normalized {
+		case "firstname", "fname", "givenname":
 			indices["firstname"] = i
-		case normalized == "lastname" || normalized == "lname" || normalized == "surname":
+		case "lastname", "lname", "surname":
 			indices["lastname"] = i
-		case normalized == "email" || normalized == "emailaddress" || normalized == "mail":
+		case "email", "emailaddress", "mail":
 			indices["email"] = i
 		}
 	}

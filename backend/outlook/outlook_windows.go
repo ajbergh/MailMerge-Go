@@ -5,21 +5,15 @@ Package outlook provides the classic-Outlook COM implementation of
 campaign.EmailSender. All COM access is confined to a single dedicated OS thread
 (a locked STA worker), so the rest of the application — including the campaign
 runner — never touches go-ole and remains testable without Outlook installed.
-
-Threading model:
-  - One goroutine calls runtime.LockOSThread and initializes COM once.
-  - All COM work is submitted as commands over a channel and executed serially on
-    that thread; the Outlook.Application object is created lazily and reused.
-  - CoUninitialize is called on shutdown only when this code successfully
-    acquired a COM initialization reference (S_OK or S_FALSE), never after
-    RPC_E_CHANGED_MODE.
 */
 package outlook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 
 	"MailMergeApp/backend/campaign"
@@ -28,15 +22,12 @@ import (
 	"github.com/go-ole/go-ole/oleutil"
 )
 
-// COM HRESULT codes we handle explicitly.
 const (
 	sOK             = 0
 	sFALSE          = 1
 	rpcEChangedMode = 0x80010106
 )
 
-// command is a unit of work executed on the STA worker thread. fn receives the
-// live, reused Outlook.Application COM object.
 type command struct {
 	fn    func(app *ole.IDispatch) error
 	reply chan error
@@ -48,8 +39,8 @@ type Sender struct {
 	stopOnce  sync.Once
 	cmds      chan command
 	done      chan struct{}
+	stopped   chan struct{}
 
-	// startErr is set once during startup and read after ready closes.
 	ready    chan struct{}
 	startErr error
 
@@ -60,18 +51,21 @@ type Sender struct {
 // New returns a classic-Outlook sender. The STA worker starts lazily on first use.
 func New() *Sender {
 	return &Sender{
-		cmds:  make(chan command),
-		done:  make(chan struct{}),
-		ready: make(chan struct{}),
+		cmds:    make(chan command),
+		done:    make(chan struct{}),
+		stopped: make(chan struct{}),
+		ready:   make(chan struct{}),
 	}
 }
 
-// Close shuts down the STA worker and releases COM.
+// Close shuts down the STA worker, waits for any in-flight COM command to finish,
+// and releases COM-owned resources before returning.
 func (s *Sender) Close() {
+	s.start()
 	s.stopOnce.Do(func() { close(s.done) })
+	<-s.stopped
 }
 
-// start launches the STA worker exactly once.
 func (s *Sender) start() {
 	s.startOnce.Do(func() {
 		go s.loop()
@@ -79,10 +73,10 @@ func (s *Sender) start() {
 	<-s.ready
 }
 
-// loop runs on a single locked OS thread for the lifetime of the sender.
 func (s *Sender) loop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	defer close(s.stopped)
 
 	ownsCOM, err := initCOM()
 	s.startErr = err
@@ -91,7 +85,6 @@ func (s *Sender) loop() {
 	}
 	close(s.ready)
 	if err != nil {
-		// Drain commands with the startup error until closed.
 		for {
 			select {
 			case <-s.done:
@@ -127,12 +120,13 @@ func (s *Sender) loop() {
 	}
 }
 
-// initCOM initializes COM on the current thread and reports whether this call
-// acquired an initialization reference that must be released with CoUninitialize.
+// initCOM initializes COM on the locked worker thread. RPC_E_CHANGED_MODE is a
+// startup failure because this worker promises an STA; continuing in an
+// incompatible apartment would make Outlook automation unsafe.
 func initCOM() (ownsCOM bool, err error) {
 	e := ole.CoInitializeEx(0, ole.COINIT_APARTMENTTHREADED)
 	if e == nil {
-		return true, nil // S_OK
+		return true, nil
 	}
 	oleErr, ok := e.(*ole.OleError)
 	if !ok {
@@ -142,9 +136,7 @@ func initCOM() (ownsCOM bool, err error) {
 	case sOK, sFALSE:
 		return true, nil
 	case rpcEChangedMode:
-		// COM already initialized on this thread with a different mode. We did
-		// NOT acquire a matching reference, so must not CoUninitialize.
-		return false, nil
+		return false, fmt.Errorf("failed to initialize Outlook STA worker: COM apartment mode is incompatible (RPC_E_CHANGED_MODE): %w", e)
 	default:
 		return false, fmt.Errorf("failed to initialize COM (hresult 0x%x): %w", oleErr.Code(), e)
 	}
@@ -163,7 +155,6 @@ func createOutlookApp() (*ole.IDispatch, error) {
 	return app, nil
 }
 
-// submit runs fn on the STA worker and returns its error (or a context error).
 func (s *Sender) submit(ctx context.Context, fn func(app *ole.IDispatch) error) error {
 	s.start()
 	if s.startErr != nil {
@@ -174,32 +165,34 @@ func (s *Sender) submit(ctx context.Context, fn func(app *ole.IDispatch) error) 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case s.cmds <- c:
 	case <-s.done:
 		return fmt.Errorf("sender is closed")
+	case s.cmds <- c:
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case e := <-reply:
 		return e
+	case <-s.stopped:
+		return fmt.Errorf("sender closed before COM command completed")
 	}
 }
 
-// Capabilities reports classic-Outlook COM capabilities.
+// Capabilities reports only behavior implemented by this sender. Account and
+// shared-mailbox selection are intentionally false until explicit selection is
+// implemented and tested.
 func (s *Sender) Capabilities(context.Context) campaign.SenderCapabilities {
 	return campaign.SenderCapabilities{
 		SupportsHTML:             true,
 		SupportsAttachments:      true,
-		SupportsMultipleAccounts: true,
-		SupportsSharedMailbox:    true,
+		SupportsMultipleAccounts: false,
+		SupportsSharedMailbox:    false,
 		SupportsDraftOnly:        true,
 		SupportsScheduling:       false,
 	}
 }
 
-// Preflight probes whether classic Outlook is reachable via COM and returns an
-// actionable status. It does not falsely claim support for new Outlook.
 func (s *Sender) Preflight(ctx context.Context) campaign.SenderStatus {
 	err := s.submit(ctx, func(app *ole.IDispatch) error {
 		if app == nil {
@@ -211,31 +204,65 @@ func (s *Sender) Preflight(ctx context.Context) campaign.SenderStatus {
 		return campaign.SenderStatus{Available: true, State: campaign.StateClassicOutlook,
 			Message: "Classic Outlook is available via COM automation."}
 	}
+	state := campaign.StateUnavailable
+	if s.startErr != nil {
+		state = campaign.StateCOMInaccessible
+	}
 	return campaign.SenderStatus{
 		Available: false,
-		State:     campaign.StateUnavailable,
+		State:     state,
 		Message: "Could not reach Microsoft Outlook via COM automation. Ensure classic " +
 			"Outlook (not New Outlook, which does not expose COM) is installed and a " +
 			"mail account is configured. Details: " + err.Error(),
 	}
 }
 
-// Send submits one rendered message through Outlook on the STA worker.
 func (s *Sender) Send(ctx context.Context, msg campaign.RenderedMessage) campaign.SendReceipt {
 	err := s.submit(ctx, func(app *ole.IDispatch) error {
 		return sendMessage(app, msg)
 	})
 	if err != nil {
-		// Treat inability to reach Outlook as fatal so the run stops cleanly.
-		fatal := s.startErr != nil
-		return campaign.SendReceipt{Submitted: false, Fatal: fatal, Err: err}
+		kind := classifySendError(err, s.startErr)
+		return campaign.SendReceipt{
+			Submitted: false,
+			Kind:      kind,
+			Fatal:     kind == campaign.SendErrorFatal,
+			Err:       err,
+		}
 	}
-	return campaign.SendReceipt{Submitted: true, Info: "submitted to Outlook"}
+	info := "submitted to Outlook"
+	if msg.SaveAsDraft {
+		info = "saved to Outlook Drafts"
+	}
+	return campaign.SendReceipt{Submitted: true, Info: info}
 }
 
-// sendMessage builds and sends a MailItem. Runs on the STA thread.
+func classifySendError(err error, startErr error) campaign.SendErrorKind {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return campaign.SendErrorCancelled
+	}
+	if startErr != nil {
+		return campaign.SendErrorFatal
+	}
+	msg := strings.ToLower(err.Error())
+	fatalMarkers := []string{
+		"sender is closed",
+		"sender closed before com command completed",
+		"outlook is not installed or not accessible via com",
+		"failed to create mail item",
+		"failed to get outlook interface",
+	}
+	for _, marker := range fatalMarkers {
+		if strings.Contains(msg, marker) {
+			return campaign.SendErrorFatal
+		}
+	}
+	return campaign.SendErrorTransient
+}
+
+// sendMessage builds and either sends or saves a MailItem. Runs on the STA thread.
 func sendMessage(app *ole.IDispatch, msg campaign.RenderedMessage) error {
-	itemVar, err := oleutil.CallMethod(app, "CreateItem", 0) // olMailItem = 0
+	itemVar, err := oleutil.CallMethod(app, "CreateItem", 0)
 	if err != nil {
 		return fmt.Errorf("failed to create mail item: %w", err)
 	}
@@ -287,8 +314,12 @@ func sendMessage(app *ole.IDispatch, msg campaign.RenderedMessage) error {
 		}
 	}
 
-	if _, err := oleutil.CallMethod(item, "Send"); err != nil {
-		return fmt.Errorf("failed to send email: %w", err)
+	method := "Send"
+	if msg.SaveAsDraft {
+		method = "Save"
+	}
+	if _, err := oleutil.CallMethod(item, method); err != nil {
+		return fmt.Errorf("failed to %s email: %w", strings.ToLower(method), err)
 	}
 	return nil
 }

@@ -11,7 +11,11 @@ export function CancelCampaign():Promise<void>;
 
 export function CheckOutlookInstalled():Promise<void>;
 
+export function ClearCampaignHistory():Promise<void>;
+
 export function ClearRecentFiles():Promise<void>;
+
+export function DeleteCampaign(arg1:string):Promise<void>;
 
 export function DeleteTemplate(arg1:string):Promise<void>;
 
@@ -20,6 +24,8 @@ export function ExportLogsToCSV(arg1:Array<models.EmailLog>):Promise<string>;
 export function GetAllTemplates():Promise<Array<models.EmailTemplate>>;
 
 export function GetAppInfo():Promise<Record<string, string>>;
+
+export function GetCampaign(arg1:string):Promise<storage.CampaignRecord>;
 
 export function GetCampaignHistory():Promise<Array<storage.CampaignRecord>>;
 
@@ -48,6 +54,8 @@ export function PreflightCampaign(arg1:models.EmailRequest):Promise<campaign.Pre
 export function PreviewMerge(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<services.MergeResult>;
 
 export function PreviewMergeForContact(arg1:string,arg2:string,arg3:models.Contact):Promise<services.MergeResult>;
+
+export function RetryCampaign(arg1:string):Promise<campaign.CampaignResult>;
 
 export function RetryFailed(arg1:models.EmailRequest):Promise<campaign.CampaignResult>;
 

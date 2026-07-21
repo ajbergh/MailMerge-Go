@@ -16,6 +16,7 @@ func TestJSONRepositorySaveListGet(t *testing.T) {
 		ID:             "run-1",
 		StartedAt:      time.Now().Add(-time.Minute),
 		Subject:        "Hello",
+		DraftOnly:      true,
 		RecipientCount: 3,
 		State:          campaign.CampaignCompleted,
 		Result:         campaign.CampaignResult{State: campaign.CampaignCompleted, Submitted: 3},
@@ -41,6 +42,9 @@ func TestJSONRepositorySaveListGet(t *testing.T) {
 	got, err := repo.Get("run-1")
 	if err != nil || got.Subject != "Hello" {
 		t.Errorf("Get failed: %v %+v", err, got)
+	}
+	if !got.DraftOnly {
+		t.Error("draft-only campaign mode was not preserved")
 	}
 
 	if err := repo.Delete("run-1"); err != nil {

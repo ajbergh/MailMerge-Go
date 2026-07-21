@@ -86,7 +86,7 @@ func TestGetRecentFilesReturnsCopyAndPrunes(t *testing.T) {
 		t.Errorf("GetRecentFiles should prune missing files, got %v", got)
 	}
 	// Mutating the returned slice must not affect internal state.
-	got = append(got, "injected")
+	got[0] = "injected"
 	if len(ss.GetRecentFiles()) != 1 {
 		t.Error("returned slice shares internal backing storage")
 	}
